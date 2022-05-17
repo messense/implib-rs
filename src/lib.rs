@@ -114,7 +114,8 @@ impl ImportLibrary {
     pub fn write_to<W: Write>(&self, writer: &mut W) {
         // FIXME: should use `GnuBuilder`
         let mut archive = ar::Builder::new(writer);
-        let mut factory = ObjectFactory::new(&self.def.import_name, self.machine);
+        let factory = ObjectFactory::new(&self.def.import_name, self.machine);
+
         let import_descriptor = factory.create_import_descriptor();
         let mut header = ar::Header::new(
             self.def.import_name.clone().into_bytes(),
@@ -122,6 +123,24 @@ impl ImportLibrary {
         );
         header.set_mode(0644);
         archive.append(&header, &import_descriptor[..]).unwrap();
+
+        let null_import_descriptor = factory.create_null_import_descriptor();
+        let mut header = ar::Header::new(
+            self.def.import_name.clone().into_bytes(),
+            null_import_descriptor.len() as u64,
+        );
+        header.set_mode(0644);
+        archive
+            .append(&header, &null_import_descriptor[..])
+            .unwrap();
+
+        let null_thunk = factory.create_null_thunk();
+        let mut header = ar::Header::new(
+            self.def.import_name.clone().into_bytes(),
+            null_thunk.len() as u64,
+        );
+        header.set_mode(0644);
+        archive.append(&header, &null_thunk[..]).unwrap();
     }
 }
 
@@ -303,7 +322,7 @@ impl<'a> ObjectFactory<'a> {
             + self.null_thunk_symbol_name.len()
             + 1)
         .to_le_bytes();
-        let mut symbol_table = [
+        let symbol_table = [
             ImageSymbol {
                 name: [0, 0, 0, 0, 4, 0, 0, 0],
                 value: U32Bytes::new(LE, 0),
@@ -397,15 +416,196 @@ impl<'a> ObjectFactory<'a> {
     /// Creates a NULL import descriptor.  This is a small object file whcih
     /// contains a NULL import descriptor.  It is used to terminate the imports
     /// from a specific DLL.
-    fn create_null_import_descriptor(&self) {
-        todo!()
+    fn create_null_import_descriptor(&self) -> Vec<u8> {
+        const NUM_SECTIONS: usize = 1;
+        const NUM_SYMBOLS: usize = 1;
+
+        let mut buffer = Vec::new();
+
+        let pointer_to_symbol_table = size_of::<ImageFileHeader>()
+            + NUM_SECTIONS * size_of::<ImageSectionHeader>()
+            // .idata$3
+            + size_of::<ImageImportDescriptor>();
+        let characteristics = if self.machine.is_32bit() {
+            IMAGE_FILE_32BIT_MACHINE
+        } else {
+            0
+        };
+        let header = ImageFileHeader {
+            machine: U16::new(LE, self.machine as u16),
+            number_of_sections: U16::new(LE, NUM_SECTIONS as u16),
+            time_date_stamp: U32::new(LE, 0),
+            pointer_to_symbol_table: U32::new(LE, pointer_to_symbol_table as u32),
+            number_of_symbols: U32::new(LE, NUM_SYMBOLS as u32),
+            size_of_optional_header: U16::new(LE, 0),
+            characteristics: U16::new(LE, characteristics),
+        };
+        buffer.extend_from_slice(bytes_of(&header));
+
+        // Section Header Table
+        let section_header_table = ImageSectionHeader {
+            name: [b'.', b'i', b'd', b'a', b't', b'a', b'$', b'3'],
+            virtual_size: U32::new(LE, 0),
+            virtual_address: U32::new(LE, 0),
+            size_of_raw_data: U32::new(LE, size_of::<ImageImportDescriptor>() as _),
+            pointer_to_raw_data: U32::new(
+                LE,
+                (size_of::<ImageFileHeader>() + NUM_SECTIONS * size_of::<ImageSectionHeader>())
+                    as _,
+            ),
+            pointer_to_relocations: U32::new(LE, 0),
+            pointer_to_linenumbers: U32::new(LE, 0),
+            number_of_relocations: U16::new(LE, 0),
+            number_of_linenumbers: U16::new(LE, 0),
+            characteristics: U32::new(
+                LE,
+                IMAGE_SCN_ALIGN_4BYTES
+                    | IMAGE_SCN_CNT_INITIALIZED_DATA
+                    | IMAGE_SCN_MEM_READ
+                    | IMAGE_SCN_MEM_WRITE,
+            ),
+        };
+        buffer.extend_from_slice(bytes_of(&section_header_table));
+
+        // .idata$3
+        let import_descriptor = ImageImportDescriptor {
+            original_first_thunk: U32Bytes::new(LE, 0),
+            time_date_stamp: U32Bytes::new(LE, 0),
+            forwarder_chain: U32Bytes::new(LE, 0),
+            name: U32Bytes::new(LE, 0),
+            first_thunk: U32Bytes::new(LE, 0),
+        };
+        buffer.extend_from_slice(bytes_of(&import_descriptor));
+
+        // Symbol Table
+        let symbol_table = ImageSymbol {
+            name: [0, 0, 0, 0, 4, 0, 0, 0],
+            value: U32Bytes::new(LE, 0),
+            section_number: U16Bytes::new(LE, 1),
+            typ: U16Bytes::new(LE, 0),
+            storage_class: IMAGE_SYM_CLASS_EXTERNAL,
+            number_of_aux_symbols: 0,
+        };
+        buffer.extend_from_slice(bytes_of(&symbol_table));
+
+        Self::write_string_table(&mut buffer, &[NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME]);
+        buffer
     }
 
     /// Create a NULL Thunk Entry.  This is a small object file which contains a
     /// NULL Import Address Table entry and a NULL Import Lookup Table Entry.  It
     /// is used to terminate the IAT and ILT.
-    fn create_null_thunk(&self) {
-        todo!()
+    fn create_null_thunk(&self) -> Vec<u8> {
+        const NUM_SECTIONS: usize = 2;
+        const NUM_SYMBOLS: usize = 1;
+
+        let mut buffer = Vec::new();
+
+        let va_size = if self.machine.is_32bit() { 4 } else { 8 };
+        let pointer_to_symbol_table = size_of::<ImageFileHeader>()
+            + NUM_SECTIONS * size_of::<ImageSectionHeader>()
+            // .idata$5
+            + va_size
+            // .idata$4
+            + va_size;
+        let characteristics = if self.machine.is_32bit() {
+            IMAGE_FILE_32BIT_MACHINE
+        } else {
+            0
+        };
+        let header = ImageFileHeader {
+            machine: U16::new(LE, self.machine as u16),
+            number_of_sections: U16::new(LE, NUM_SECTIONS as u16),
+            time_date_stamp: U32::new(LE, 0),
+            pointer_to_symbol_table: U32::new(LE, pointer_to_symbol_table as u32),
+            number_of_symbols: U32::new(LE, NUM_SYMBOLS as u32),
+            size_of_optional_header: U16::new(LE, 0),
+            characteristics: U16::new(LE, characteristics),
+        };
+        buffer.extend_from_slice(bytes_of(&header));
+
+        // Section Header Table
+        let align = if self.machine.is_32bit() {
+            IMAGE_SCN_ALIGN_4BYTES
+        } else {
+            IMAGE_SCN_ALIGN_8BYTES
+        };
+        let section_header_table = [
+            ImageSectionHeader {
+                name: [b'.', b'i', b'd', b'a', b't', b'a', b'$', b'5'],
+                virtual_size: U32::new(LE, 0),
+                virtual_address: U32::new(LE, 0),
+                size_of_raw_data: U32::new(LE, va_size as _),
+                pointer_to_raw_data: U32::new(
+                    LE,
+                    (size_of::<ImageFileHeader>() + NUM_SECTIONS * size_of::<ImageSectionHeader>())
+                        as _,
+                ),
+                pointer_to_relocations: U32::new(LE, 0),
+                pointer_to_linenumbers: U32::new(LE, 0),
+                number_of_relocations: U16::new(LE, 0),
+                number_of_linenumbers: U16::new(LE, 0),
+                characteristics: U32::new(
+                    LE,
+                    align
+                        | IMAGE_SCN_CNT_INITIALIZED_DATA
+                        | IMAGE_SCN_MEM_READ
+                        | IMAGE_SCN_MEM_WRITE,
+                ),
+            },
+            ImageSectionHeader {
+                name: [b'.', b'i', b'd', b'a', b't', b'a', b'$', b'4'],
+                virtual_size: U32::new(LE, 0),
+                virtual_address: U32::new(LE, 0),
+                size_of_raw_data: U32::new(LE, va_size as _),
+                pointer_to_raw_data: U32::new(
+                    LE,
+                    (size_of::<ImageFileHeader>()
+                        + NUM_SECTIONS * size_of::<ImageSectionHeader>()
+                        + va_size) as _,
+                ),
+                pointer_to_relocations: U32::new(LE, 0),
+                pointer_to_linenumbers: U32::new(LE, 0),
+                number_of_relocations: U16::new(LE, 0),
+                number_of_linenumbers: U16::new(LE, 0),
+                characteristics: U32::new(
+                    LE,
+                    align
+                        | IMAGE_SCN_CNT_INITIALIZED_DATA
+                        | IMAGE_SCN_MEM_READ
+                        | IMAGE_SCN_MEM_WRITE,
+                ),
+            },
+        ];
+        for section in section_header_table {
+            buffer.extend_from_slice(bytes_of(&section));
+        }
+
+        // .idata$5, ILT
+        buffer.extend(0u32.to_le_bytes());
+        if !self.machine.is_32bit() {
+            buffer.extend(0u32.to_le_bytes());
+        }
+
+        // .idata$4, IAT
+        buffer.extend(0u32.to_le_bytes());
+        if !self.machine.is_32bit() {
+            buffer.extend(0u32.to_le_bytes());
+        }
+
+        // Symbol Table
+        let symbol_table = ImageSymbol {
+            name: [0, 0, 0, 0, 4, 0, 0, 0],
+            value: U32Bytes::new(LE, 0),
+            section_number: U16Bytes::new(LE, 1),
+            typ: U16Bytes::new(LE, 0),
+            storage_class: IMAGE_SYM_CLASS_EXTERNAL,
+            number_of_aux_symbols: 0,
+        };
+        buffer.extend_from_slice(bytes_of(&symbol_table));
+
+        Self::write_string_table(&mut buffer, &[&self.null_thunk_symbol_name]);
+        buffer
     }
 
     /// Create a short import file which is described in PE/COFF spec 7. Import
