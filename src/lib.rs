@@ -14,7 +14,7 @@ mod def;
 
 const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &'static str = "__NULL_IMPORT_DESCRIPTOR";
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum MachineType {
     /// UNKNOWN
@@ -88,6 +88,47 @@ impl MachineType {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+#[repr(u16)]
+enum ImportType {
+    /// Code, function
+    Code,
+    /// Data
+    Data,
+    /// Constant
+    Const,
+}
+
+impl ShortExport {
+    fn import_type(&self) -> ImportType {
+        if self.data {
+            ImportType::Data
+        } else if self.constant {
+            ImportType::Const
+        } else {
+            ImportType::Code
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u16)]
+enum ImportNameType {
+    /// Import is by ordinal. This indicates that the value in the Ordinal/Hint
+    /// field of the import header is the import's ordinal. If this constant is
+    /// not specified, then the Ordinal/Hint field should always be interpreted
+    /// as the import's hint.
+    Ordinal = IMPORT_OBJECT_ORDINAL,
+    /// The import name is identical to the public symbol name
+    Name = IMPORT_OBJECT_NAME,
+    /// The import name is the public symbol name, but skipping the leading ?,
+    /// @, or optionally _.
+    NameNoPrefix = IMPORT_OBJECT_NAME_NO_PREFIX,
+    /// The import name is the public symbol name, but skipping the leading ?,
+    /// @, or optionally _, and truncating at the first @.
+    NameUndecorate = IMPORT_OBJECT_NAME_UNDECORATE,
+}
+
 /// Windows import library generator
 #[derive(Debug, Clone)]
 pub struct ImportLibrary {
@@ -108,6 +149,20 @@ impl ImportLibrary {
         // Skipped i386 handling
         // See https://github.com/llvm/llvm-project/blob/09c2b7c35af8c4bad39f03e9f60df8bd07323028/llvm/lib/ToolDrivers/llvm-dlltool/DlltoolDriver.cpp#L197-L212
         ImportLibrary { def, machine }
+    }
+
+    fn get_name_type(&self, sym: &str, ext_name: &str) -> ImportNameType {
+        // Skipped mingw64 handling
+        // See https://github.com/llvm/llvm-project/blob/09c2b7c35af8c4bad39f03e9f60df8bd07323028/llvm/lib/Object/COFFImportFile.cpp#L96-L105
+        if ext_name.starts_with('_') && ext_name.contains('@') {
+            ImportNameType::Name
+        } else if sym != ext_name {
+            ImportNameType::NameUndecorate
+        } else if self.machine == MachineType::I386 && sym.starts_with('_') {
+            ImportNameType::NameNoPrefix
+        } else {
+            ImportNameType::Name
+        }
     }
 
     /// Write out the import library
@@ -141,6 +196,53 @@ impl ImportLibrary {
         );
         header.set_mode(0644);
         archive.append(&header, &null_thunk[..]).unwrap();
+
+        for export in &self.def.exports {
+            if export.private {
+                continue;
+            }
+            let sym = if export.symbol_name.is_empty() {
+                &export.name
+            } else {
+                &export.symbol_name
+            };
+            let name_type = if export.no_name {
+                ImportNameType::Ordinal
+            } else {
+                self.get_name_type(sym, &export.name)
+            };
+            let name = if export.ext_name.is_none() {
+                sym
+            } else {
+                todo!()
+            };
+
+            if !export.alias_target.is_empty() && name != &export.alias_target {
+                let weak_non_imp = factory.create_weak_external(&export.alias_target, name, false);
+                let mut header = ar::Header::new(
+                    self.def.import_name.clone().into_bytes(),
+                    weak_non_imp.len() as u64,
+                );
+                header.set_mode(0644);
+                archive.append(&header, &weak_non_imp[..]).unwrap();
+
+                let weak_imp = factory.create_weak_external(&export.alias_target, name, true);
+                let mut header = ar::Header::new(
+                    self.def.import_name.clone().into_bytes(),
+                    weak_imp.len() as u64,
+                );
+                header.set_mode(0644);
+                archive.append(&header, &weak_imp[..]).unwrap();
+            }
+            let short_import =
+                factory.create_short_import(name, export.ordinal, export.import_type(), name_type);
+            let mut header = ar::Header::new(
+                self.def.import_name.clone().into_bytes(),
+                short_import.len() as u64,
+            );
+            header.set_mode(0644);
+            archive.append(&header, &short_import[..]).unwrap();
+        }
     }
 }
 
@@ -610,12 +712,178 @@ impl<'a> ObjectFactory<'a> {
 
     /// Create a short import file which is described in PE/COFF spec 7. Import
     /// Library Format.
-    fn create_short_import(&self) {
-        todo!()
+    fn create_short_import(
+        &self,
+        sym: &str,
+        ordinal: u16,
+        import_type: ImportType,
+        name_type: ImportNameType,
+    ) -> Vec<u8> {
+        // +2 for NULs
+        let import_name_size = self.import_name.len() + sym.len() + 2;
+        let size = size_of::<ImportObjectHeader>() + import_name_size;
+        let mut buffer = Vec::with_capacity(size);
+
+        // Write short import header
+        let import_header = ImportObjectHeader {
+            sig1: U16::new(LE, 0),
+            sig2: U16::new(LE, 0xFFFF),
+            version: U16::new(LE, 0),
+            machine: U16::new(LE, self.machine as _),
+            time_date_stamp: U32::new(LE, 0),
+            size_of_data: Default::default(),
+            ordinal_or_hint: if ordinal > 0 {
+                U16::new(LE, ordinal)
+            } else {
+                U16::new(LE, 0)
+            },
+            name_type: U16::new(LE, ((name_type as u16) << 2) | import_type as u16),
+        };
+        buffer.extend_from_slice(bytes_of(&import_header));
+        // Write symbol name and DLL name
+        let sym = CString::new(sym).unwrap();
+        buffer.extend(sym.into_bytes_with_nul());
+        let import_name = CString::new(self.import_name).unwrap();
+        buffer.extend(import_name.into_bytes_with_nul());
+        buffer
     }
 
     /// Create a weak external file which is described in PE/COFF Aux Format 3.
-    fn create_weak_external(&self) {
-        todo!()
+    fn create_weak_external(&self, sym: &str, weak: &str, imp: bool) -> Vec<u8> {
+        const NUM_SECTIONS: usize = 1;
+        const NUM_SYMBOLS: usize = 5;
+
+        let mut buffer = Vec::new();
+
+        let pointer_to_symbol_table =
+            size_of::<ImageFileHeader>() + NUM_SECTIONS * size_of::<ImageSectionHeader>();
+        let header = ImageFileHeader {
+            machine: U16::new(LE, self.machine as u16),
+            number_of_sections: U16::new(LE, NUM_SECTIONS as u16),
+            time_date_stamp: U32::new(LE, 0),
+            pointer_to_symbol_table: U32::new(LE, pointer_to_symbol_table as u32),
+            number_of_symbols: U32::new(LE, NUM_SYMBOLS as u32),
+            size_of_optional_header: U16::new(LE, 0),
+            characteristics: U16::new(LE, 0),
+        };
+        buffer.extend_from_slice(bytes_of(&header));
+
+        // Section Header Table
+        let section_header_table = ImageSectionHeader {
+            name: [b'.', b'd', b'r', b'e', b'c', b't', b'v', b'e'],
+            virtual_size: U32::new(LE, 0),
+            virtual_address: U32::new(LE, 0),
+            size_of_raw_data: U32::new(LE, 0),
+            pointer_to_raw_data: U32::new(LE, 0),
+            pointer_to_relocations: U32::new(LE, 0),
+            pointer_to_linenumbers: U32::new(LE, 0),
+            number_of_relocations: U16::new(LE, 0),
+            number_of_linenumbers: U16::new(LE, 0),
+            characteristics: U32::new(LE, IMAGE_SCN_LNK_INFO | IMAGE_SCN_LNK_REMOVE),
+        };
+        buffer.extend_from_slice(bytes_of(&section_header_table));
+
+        // .idata$2
+        let import_descriptor = ImageImportDescriptor {
+            original_first_thunk: U32Bytes::new(LE, 0),
+            time_date_stamp: U32Bytes::new(LE, 0),
+            forwarder_chain: U32Bytes::new(LE, 0),
+            name: U32Bytes::new(LE, 0),
+            first_thunk: U32Bytes::new(LE, 0),
+        };
+        buffer.extend_from_slice(bytes_of(&import_descriptor));
+
+        let relocation_table = [
+            ImageRelocation {
+                virtual_address: Default::default(),
+                symbol_table_index: Default::default(),
+                typ: Default::default(),
+            },
+            ImageRelocation {
+                virtual_address: Default::default(),
+                symbol_table_index: Default::default(),
+                typ: Default::default(),
+            },
+            ImageRelocation {
+                virtual_address: Default::default(),
+                symbol_table_index: Default::default(),
+                typ: Default::default(),
+            },
+        ];
+        for relocation in &relocation_table {
+            buffer.extend_from_slice(bytes_of(relocation));
+        }
+
+        // .idata$6
+        buffer.extend_from_slice(self.import_name.as_bytes());
+        buffer.push(b'\0');
+
+        // Symbol Table
+        let prefix = if imp { "__imp_" } else { "" };
+        let sym3_offset = (size_of::<u32>() + sym.len() + prefix.len() + 1).to_le_bytes();
+        let symbol_table = [
+            ImageSymbol {
+                name: [b'@', b'c', b'o', b'm', b'p', b'.', b'i', b'd'],
+                value: U32Bytes::new(LE, 0),
+                section_number: U16Bytes::new(LE, 0xFFFF),
+                typ: U16Bytes::new(LE, 0),
+                storage_class: IMAGE_SYM_CLASS_STATIC,
+                number_of_aux_symbols: 0,
+            },
+            ImageSymbol {
+                name: [b'@', b'f', b'e', b'a', b't', b'.', b'0', b'0'],
+                value: U32Bytes::new(LE, 0),
+                section_number: U16Bytes::new(LE, 0xFFFF),
+                typ: U16Bytes::new(LE, 0),
+                storage_class: IMAGE_SYM_CLASS_STATIC,
+                number_of_aux_symbols: 0,
+            },
+            ImageSymbol {
+                name: [0, 0, 0, 0, 4, 0, 0, 0],
+                value: U32Bytes::new(LE, 0),
+                section_number: U16Bytes::new(LE, 0),
+                typ: U16Bytes::new(LE, 0),
+                storage_class: IMAGE_SYM_CLASS_EXTERNAL,
+                number_of_aux_symbols: 0,
+            },
+            ImageSymbol {
+                name: [
+                    0,
+                    0,
+                    0,
+                    0,
+                    sym3_offset[0],
+                    sym3_offset[1],
+                    sym3_offset[2],
+                    sym3_offset[3],
+                ],
+                value: U32Bytes::new(LE, 0),
+                section_number: U16Bytes::new(LE, 0),
+                typ: U16Bytes::new(LE, 0),
+                storage_class: IMAGE_SYM_CLASS_WEAK_EXTERNAL,
+                number_of_aux_symbols: 1,
+            },
+            ImageSymbol {
+                name: [2, 0, 0, 0, IMAGE_WEAK_EXTERN_SEARCH_ALIAS as u8, 0, 0, 0],
+                value: U32Bytes::new(LE, 0),
+                section_number: U16Bytes::new(LE, 0),
+                typ: U16Bytes::new(LE, 0),
+                storage_class: IMAGE_SYM_CLASS_NULL,
+                number_of_aux_symbols: 0,
+            },
+        ];
+        for table in &symbol_table {
+            buffer.extend_from_slice(bytes_of(table));
+        }
+
+        // __imp_ String Table
+        Self::write_string_table(
+            &mut buffer,
+            &[
+                &format!("{}{}", prefix, sym),
+                &format!("{}{}", prefix, weak),
+            ],
+        );
+        buffer
     }
 }
