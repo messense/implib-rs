@@ -2,6 +2,7 @@ use std::ffi::CString;
 use std::io::Write;
 use std::mem::size_of;
 
+use memoffset::offset_of;
 use object::endian::{LittleEndian as LE, U32Bytes, U16, U32};
 use object::pe::*;
 use object::pod::bytes_of;
@@ -17,66 +18,13 @@ const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &'static str = "__NULL_IMPORT_DESCRIPT
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum MachineType {
-    /// UNKNOWN
-    UNKNOWN = IMAGE_FILE_MACHINE_UNKNOWN,
     /// Intel 386
     I386 = IMAGE_FILE_MACHINE_I386,
-    /// MIPS little-endian, 0x160 big-endian
-    R3000 = IMAGE_FILE_MACHINE_R3000,
-    /// MIPS little-endian
-    R4000 = IMAGE_FILE_MACHINE_R4000,
-    /// MIPS little-endian
-    R10000 = IMAGE_FILE_MACHINE_R10000,
-    /// MIPS little-endian WCE v2
-    WCEMIPSV2 = IMAGE_FILE_MACHINE_WCEMIPSV2,
-    /// Alpha_AXP
-    ALPHA = IMAGE_FILE_MACHINE_ALPHA,
-    /// SH3 little-endian
-    SH3 = IMAGE_FILE_MACHINE_SH3,
-    SH3DSP = IMAGE_FILE_MACHINE_SH3DSP,
-    /// SH3E little-endian
-    SH3E = IMAGE_FILE_MACHINE_SH3E,
-    /// SH4 little-endian
-    SH4 = IMAGE_FILE_MACHINE_SH4,
-    /// SH5 little-endian
-    SH5 = IMAGE_FILE_MACHINE_SH5,
-    /// ARM
-    ARM = IMAGE_FILE_MACHINE_ARM,
-    /// ARM Thumb/Thumb-2 Little-Endian
-    THUMB = IMAGE_FILE_MACHINE_THUMB,
     /// ARM Thumb-2 Little-Endian
     ARMNT = IMAGE_FILE_MACHINE_ARMNT,
-    AM33 = IMAGE_FILE_MACHINE_AM33,
-    /// IBM PowerPC Little-Endian
-    POWERPC = IMAGE_FILE_MACHINE_POWERPC,
-    POWERPCFP = IMAGE_FILE_MACHINE_POWERPCFP,
-    /// Intel 64
-    IA64 = IMAGE_FILE_MACHINE_IA64,
-    /// MIPS
-    MIPS16 = IMAGE_FILE_MACHINE_MIPS16,
-    /// ALPHA64
-    ALPHA64 = IMAGE_FILE_MACHINE_ALPHA64,
-    /// MIPS
-    MIPSFPU = IMAGE_FILE_MACHINE_MIPSFPU,
-    MIPSFPU16 = IMAGE_FILE_MACHINE_MIPSFPU16,
-    /// Infineon
-    TRICORE = IMAGE_FILE_MACHINE_TRICORE,
-    CEF = IMAGE_FILE_MACHINE_CEF,
-    /// EFI Byte Code
-    EBC = IMAGE_FILE_MACHINE_EBC,
     /// AMD64 (K8)
     AMD64 = IMAGE_FILE_MACHINE_AMD64,
-    /// M32R little-endian
-    M32R = IMAGE_FILE_MACHINE_M32R,
-    /// ARM64 Little-Endian
     ARM64 = IMAGE_FILE_MACHINE_ARM64,
-    CEE = IMAGE_FILE_MACHINE_CEE,
-    /// RISCV32
-    RISCV32 = IMAGE_FILE_MACHINE_RISCV32,
-    /// RISCV64
-    RISCV64 = IMAGE_FILE_MACHINE_RISCV64,
-    /// RISCV128
-    RISCV128 = IMAGE_FILE_MACHINE_RISCV128,
 }
 
 impl MachineType {
@@ -84,6 +32,15 @@ impl MachineType {
         match self {
             Self::ARMNT | Self::I386 => true,
             _ => false,
+        }
+    }
+
+    fn img_rel_relocation(&self) -> u16 {
+        match self {
+            Self::AMD64 => IMAGE_REL_AMD64_ADDR32NB,
+            Self::ARMNT => IMAGE_REL_ARM_ADDR32NB,
+            Self::ARM64 => IMAGE_REL_ARM64_ADDR32NB,
+            Self::I386 => IMAGE_REL_I386_DIR32NB,
         }
     }
 }
@@ -392,19 +349,25 @@ impl<'a> ObjectFactory<'a> {
 
         let relocation_table = [
             ImageRelocation {
-                virtual_address: Default::default(),
-                symbol_table_index: Default::default(),
-                typ: Default::default(),
+                virtual_address: U32Bytes::new(LE, offset_of!(ImageImportDescriptor, name) as _),
+                symbol_table_index: U32Bytes::new(LE, 2),
+                typ: U16Bytes::new(LE, self.machine.img_rel_relocation()),
             },
             ImageRelocation {
-                virtual_address: Default::default(),
-                symbol_table_index: Default::default(),
-                typ: Default::default(),
+                virtual_address: U32Bytes::new(
+                    LE,
+                    offset_of!(ImageImportDescriptor, original_first_thunk) as _,
+                ),
+                symbol_table_index: U32Bytes::new(LE, 3),
+                typ: U16Bytes::new(LE, self.machine.img_rel_relocation()),
             },
             ImageRelocation {
-                virtual_address: Default::default(),
-                symbol_table_index: Default::default(),
-                typ: Default::default(),
+                virtual_address: U32Bytes::new(
+                    LE,
+                    offset_of!(ImageImportDescriptor, first_thunk) as _,
+                ),
+                symbol_table_index: U32Bytes::new(LE, 4),
+                typ: U16Bytes::new(LE, self.machine.img_rel_relocation()),
             },
         ];
         for relocation in &relocation_table {
