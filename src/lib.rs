@@ -751,41 +751,6 @@ impl<'a> ObjectFactory<'a> {
         };
         buffer.extend_from_slice(bytes_of(&section_header_table));
 
-        // .idata$2
-        let import_descriptor = ImageImportDescriptor {
-            original_first_thunk: U32Bytes::new(LE, 0),
-            time_date_stamp: U32Bytes::new(LE, 0),
-            forwarder_chain: U32Bytes::new(LE, 0),
-            name: U32Bytes::new(LE, 0),
-            first_thunk: U32Bytes::new(LE, 0),
-        };
-        buffer.extend_from_slice(bytes_of(&import_descriptor));
-
-        let relocation_table = [
-            ImageRelocation {
-                virtual_address: Default::default(),
-                symbol_table_index: Default::default(),
-                typ: Default::default(),
-            },
-            ImageRelocation {
-                virtual_address: Default::default(),
-                symbol_table_index: Default::default(),
-                typ: Default::default(),
-            },
-            ImageRelocation {
-                virtual_address: Default::default(),
-                symbol_table_index: Default::default(),
-                typ: Default::default(),
-            },
-        ];
-        for relocation in &relocation_table {
-            buffer.extend_from_slice(bytes_of(relocation));
-        }
-
-        // .idata$6
-        buffer.extend_from_slice(self.import_name.as_bytes());
-        buffer.push(b'\0');
-
         // Symbol Table
         let prefix = if imp { "__imp_" } else { "" };
         let sym3_offset = (size_of::<u32>() + sym.len() + prefix.len() + 1).to_le_bytes();
