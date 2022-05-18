@@ -70,7 +70,7 @@ impl<'a> Iterator for Lexer<'a> {
                     value: None,
                 }),
                 ';' => {
-                    while let Some((_, next_c)) = self.chars.next() {
+                    for (_, next_c) in self.chars.by_ref() {
                         if next_c == '\n' {
                             break;
                         }
@@ -93,7 +93,7 @@ impl<'a> Iterator for Lexer<'a> {
                 }),
                 '"' => {
                     let mut end = i + 1;
-                    while let Some((j, next_c)) = self.chars.next() {
+                    for (j, next_c) in self.chars.by_ref() {
                         if next_c == '"' {
                             end = j;
                             break;
@@ -106,7 +106,7 @@ impl<'a> Iterator for Lexer<'a> {
                 }
                 _ => {
                     let mut end = i;
-                    while let Some((j, next_c)) = self.chars.next() {
+                    for (j, next_c) in self.chars.by_ref() {
                         match next_c {
                             '=' | ',' | ';' | '\r' | '\n' | ' ' | '\t' | '\x0B' => {
                                 end = j;

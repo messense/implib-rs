@@ -15,7 +15,7 @@ pub use self::def::{ModuleDef, ModuleDefError, ShortExport};
 /// Parse .DEF file
 mod def;
 
-const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &'static str = "__NULL_IMPORT_DESCRIPTOR";
+const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &str = "__NULL_IMPORT_DESCRIPTOR";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -31,10 +31,7 @@ pub enum MachineType {
 
 impl MachineType {
     fn is_32bit(&self) -> bool {
-        match self {
-            Self::ARMNT | Self::I386 => true,
-            _ => false,
-        }
+        matches!(self, Self::ARMNT | Self::I386)
     }
 
     fn img_rel_relocation(&self) -> u16 {
@@ -124,37 +121,29 @@ impl ImportLibrary {
         }
     }
 
+    fn create_archive_entry(member: ArchiveMember) -> (ar::Header, Vec<u8>) {
+        let mut header = ar::Header::new(
+            member.name.to_string().into_bytes(),
+            member.data.len() as u64,
+        );
+        header.set_mode(0o644);
+        (header, member.data)
+    }
+
     /// Write out the import library
     pub fn write_to<W: Write>(&self, writer: &mut W) {
         // FIXME: should use `GnuBuilder`
-        let mut archive = ar::Builder::new(writer);
+        let mut members = Vec::new();
         let factory = ObjectFactory::new(&self.def.import_name, self.machine);
 
         let import_descriptor = factory.create_import_descriptor();
-        let mut header = ar::Header::new(
-            self.def.import_name.clone().into_bytes(),
-            import_descriptor.len() as u64,
-        );
-        header.set_mode(0644);
-        archive.append(&header, &import_descriptor[..]).unwrap();
+        members.push(Self::create_archive_entry(import_descriptor));
 
         let null_import_descriptor = factory.create_null_import_descriptor();
-        let mut header = ar::Header::new(
-            self.def.import_name.clone().into_bytes(),
-            null_import_descriptor.len() as u64,
-        );
-        header.set_mode(0644);
-        archive
-            .append(&header, &null_import_descriptor[..])
-            .unwrap();
+        members.push(Self::create_archive_entry(null_import_descriptor));
 
         let null_thunk = factory.create_null_thunk();
-        let mut header = ar::Header::new(
-            self.def.import_name.clone().into_bytes(),
-            null_thunk.len() as u64,
-        );
-        header.set_mode(0644);
-        archive.append(&header, &null_thunk[..]).unwrap();
+        members.push(Self::create_archive_entry(null_thunk));
 
         for export in &self.def.exports {
             if export.private {
@@ -178,31 +167,31 @@ impl ImportLibrary {
 
             if !export.alias_target.is_empty() && name != &export.alias_target {
                 let weak_non_imp = factory.create_weak_external(&export.alias_target, name, false);
-                let mut header = ar::Header::new(
-                    self.def.import_name.clone().into_bytes(),
-                    weak_non_imp.len() as u64,
-                );
-                header.set_mode(0644);
-                archive.append(&header, &weak_non_imp[..]).unwrap();
+                members.push(Self::create_archive_entry(weak_non_imp));
 
                 let weak_imp = factory.create_weak_external(&export.alias_target, name, true);
-                let mut header = ar::Header::new(
-                    self.def.import_name.clone().into_bytes(),
-                    weak_imp.len() as u64,
-                );
-                header.set_mode(0644);
-                archive.append(&header, &weak_imp[..]).unwrap();
+                members.push(Self::create_archive_entry(weak_imp));
             }
             let short_import =
                 factory.create_short_import(name, export.ordinal, export.import_type(), name_type);
-            let mut header = ar::Header::new(
-                self.def.import_name.clone().into_bytes(),
-                short_import.len() as u64,
-            );
-            header.set_mode(0644);
-            archive.append(&header, &short_import[..]).unwrap();
+            members.push(Self::create_archive_entry(short_import));
+        }
+
+        let identifiers = members
+            .iter()
+            .map(|(header, _)| header.identifier().to_vec())
+            .collect();
+        let mut archive = ar::GnuBuilder::new(writer, identifiers);
+        for (header, data) in members {
+            archive.append(&header, &data[..]).unwrap();
         }
     }
+}
+
+#[derive(Debug)]
+struct ArchiveMember<'a> {
+    name: &'a str,
+    data: Vec<u8>,
 }
 
 /// Constructs various small object files necessary to support linking
@@ -254,7 +243,7 @@ impl<'a> ObjectFactory<'a> {
     /// reference to the terminators and contains the library name (entry) for the
     /// import name table.  It will force the linker to construct the necessary
     /// structure to import symbols from the DLL.
-    fn create_import_descriptor(&self) -> Vec<u8> {
+    fn create_import_descriptor(&self) -> ArchiveMember<'a> {
         const NUM_SECTIONS: usize = 2;
         const NUM_SYMBOLS: usize = 7;
         const NUM_RELOCATIONS: usize = 3;
@@ -479,13 +468,16 @@ impl<'a> ObjectFactory<'a> {
                 &self.null_thunk_symbol_name,
             ],
         );
-        buffer
+        ArchiveMember {
+            name: self.import_name,
+            data: buffer,
+        }
     }
 
     /// Creates a NULL import descriptor.  This is a small object file whcih
     /// contains a NULL import descriptor.  It is used to terminate the imports
     /// from a specific DLL.
-    fn create_null_import_descriptor(&self) -> Vec<u8> {
+    fn create_null_import_descriptor(&self) -> ArchiveMember<'a> {
         const NUM_SECTIONS: usize = 1;
         const NUM_SYMBOLS: usize = 1;
 
@@ -558,13 +550,16 @@ impl<'a> ObjectFactory<'a> {
         buffer.extend_from_slice(bytes_of(&symbol_table));
 
         Self::write_string_table(&mut buffer, &[NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME]);
-        buffer
+        ArchiveMember {
+            name: self.import_name,
+            data: buffer,
+        }
     }
 
     /// Create a NULL Thunk Entry.  This is a small object file which contains a
     /// NULL Import Address Table entry and a NULL Import Lookup Table Entry.  It
     /// is used to terminate the IAT and ILT.
-    fn create_null_thunk(&self) -> Vec<u8> {
+    fn create_null_thunk(&self) -> ArchiveMember<'a> {
         const NUM_SECTIONS: usize = 2;
         const NUM_SYMBOLS: usize = 1;
 
@@ -674,7 +669,10 @@ impl<'a> ObjectFactory<'a> {
         buffer.extend_from_slice(bytes_of(&symbol_table));
 
         Self::write_string_table(&mut buffer, &[&self.null_thunk_symbol_name]);
-        buffer
+        ArchiveMember {
+            name: self.import_name,
+            data: buffer,
+        }
     }
 
     /// Create a short import file which is described in PE/COFF spec 7. Import
@@ -685,7 +683,7 @@ impl<'a> ObjectFactory<'a> {
         ordinal: u16,
         import_type: ImportType,
         name_type: ImportNameType,
-    ) -> Vec<u8> {
+    ) -> ArchiveMember<'a> {
         // +2 for NULs
         let import_name_size = self.import_name.len() + sym.len() + 2;
         let size = size_of::<ImportObjectHeader>() + import_name_size;
@@ -712,11 +710,14 @@ impl<'a> ObjectFactory<'a> {
         buffer.extend(sym.into_bytes_with_nul());
         let import_name = CString::new(self.import_name).unwrap();
         buffer.extend(import_name.into_bytes_with_nul());
-        buffer
+        ArchiveMember {
+            name: self.import_name,
+            data: buffer,
+        }
     }
 
     /// Create a weak external file which is described in PE/COFF Aux Format 3.
-    fn create_weak_external(&self, sym: &str, weak: &str, imp: bool) -> Vec<u8> {
+    fn create_weak_external(&self, sym: &str, weak: &str, imp: bool) -> ArchiveMember<'a> {
         const NUM_SECTIONS: usize = 1;
         const NUM_SYMBOLS: usize = 5;
 
@@ -851,6 +852,9 @@ impl<'a> ObjectFactory<'a> {
                 &format!("{}{}", prefix, weak),
             ],
         );
-        buffer
+        ArchiveMember {
+            name: self.import_name,
+            data: buffer,
+        }
     }
 }
