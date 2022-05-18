@@ -213,7 +213,6 @@ impl ImportLibrary {
 struct ObjectFactory<'a> {
     machine: MachineType,
     import_name: &'a str,
-    library: &'a str,
     import_descriptor_symbol_name: String,
     null_thunk_symbol_name: String,
 }
@@ -224,7 +223,6 @@ impl<'a> ObjectFactory<'a> {
         Self {
             machine,
             import_name,
-            library,
             import_descriptor_symbol_name: format!("__IMPORT_DESCRIPTOR_{}", library),
             null_thunk_symbol_name: format!("\x7f{}_NULL_THUNK_DATA", library),
         }
