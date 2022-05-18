@@ -1,5 +1,3 @@
-extern crate core;
-
 use std::ffi::CString;
 use std::io::Write;
 use std::mem::size_of;
