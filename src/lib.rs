@@ -1,3 +1,5 @@
+extern crate core;
+
 use std::ffi::CString;
 use std::io::Write;
 use std::mem::size_of;
@@ -203,6 +205,10 @@ impl ImportLibrary {
     }
 }
 
+/// Constructs various small object files necessary to support linking
+/// symbols imported from a DLL.  The contents are pretty strictly defined and
+/// nearly entirely static.  The details of the structures files are defined in
+/// WINNT.h and the PE/COFF specification.
 #[derive(Debug)]
 struct ObjectFactory<'a> {
     machine: MachineType,

@@ -118,24 +118,28 @@ impl<'a> Iterator for Lexer<'a> {
                         }
                     }
                     let word = self.text[i..end].trim();
-                    let kind = match word {
-                        "BASE" => TokenKind::KwBase,
-                        "CONSTANT" => TokenKind::KwConstant,
-                        "DATA" => TokenKind::KwData,
-                        "EXPORTS" => TokenKind::KwExports,
-                        "HEAPSIZE" => TokenKind::KwHeapsize,
-                        "LIBRARY" => TokenKind::KwLibrary,
-                        "NAME" => TokenKind::KwName,
-                        "NONAME" => TokenKind::KwNoname,
-                        "PRIVATE" => TokenKind::KwPrivate,
-                        "STACKSIZE" => TokenKind::KwStacksize,
-                        "VERSION" => TokenKind::KwVersion,
-                        _ => TokenKind::Identifier,
-                    };
-                    Some(Token {
-                        kind,
-                        value: Some(word),
-                    })
+                    if word.is_empty() {
+                        self.next()
+                    } else {
+                        let kind = match word {
+                            "BASE" => TokenKind::KwBase,
+                            "CONSTANT" => TokenKind::KwConstant,
+                            "DATA" => TokenKind::KwData,
+                            "EXPORTS" => TokenKind::KwExports,
+                            "HEAPSIZE" => TokenKind::KwHeapsize,
+                            "LIBRARY" => TokenKind::KwLibrary,
+                            "NAME" => TokenKind::KwName,
+                            "NONAME" => TokenKind::KwNoname,
+                            "PRIVATE" => TokenKind::KwPrivate,
+                            "STACKSIZE" => TokenKind::KwStacksize,
+                            "VERSION" => TokenKind::KwVersion,
+                            _ => TokenKind::Identifier,
+                        };
+                        Some(Token {
+                            kind,
+                            value: Some(word),
+                        })
+                    }
                 }
             }
         } else {
@@ -207,7 +211,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 return Err(ModuleDefError::UnknownDirective(
-                    token.value.unwrap_or_default().to_string(),
+                    token.unwrap_value().to_string(),
                 ))
             }
         }
