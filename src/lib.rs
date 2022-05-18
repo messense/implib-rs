@@ -183,6 +183,8 @@ impl ImportLibrary {
         for (header, data) in members {
             archive.append(&header, &data[..]).unwrap();
         }
+        // FIXME: Need to use ranlib to generate symbol table index to actually be usable
+        // See https://github.com/mdsteele/rust-ar/pull/17#issuecomment-1129606307
     }
 }
 
