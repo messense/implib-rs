@@ -3,6 +3,9 @@ name = "implib"
 version = "0.1.0"
 description = "Generate Windows import library from module definition file"
 edition = "2018"
+license = "MIT"
+repository = "https://github.com/messense/implib-rs"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
