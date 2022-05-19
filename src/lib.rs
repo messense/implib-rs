@@ -696,7 +696,7 @@ impl<'a> ObjectFactory<'a> {
             version: U16::new(LE, 0),
             machine: U16::new(LE, self.machine as _),
             time_date_stamp: U32::new(LE, 0),
-            size_of_data: Default::default(),
+            size_of_data: U32::new(LE, import_name_size as _),
             ordinal_or_hint: if ordinal > 0 {
                 U16::new(LE, ordinal)
             } else {
