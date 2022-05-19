@@ -1,15 +1,17 @@
+use std::collections::BTreeMap;
 use std::ffi::CString;
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::mem::size_of;
 
 use memoffset::offset_of;
-use object::endian::{LittleEndian as LE, U32Bytes, U16, U32};
+use object::endian::{LittleEndian as LE, U16Bytes, U32Bytes, U16, U32};
 use object::pe::*;
 use object::pod::bytes_of;
-use object::U16Bytes;
 
 pub use self::def::{ModuleDef, ModuleDefError, ShortExport};
 
+/// Unix archiver writer
+mod ar;
 /// Parse .DEF file
 mod def;
 
@@ -119,17 +121,17 @@ impl ImportLibrary {
         }
     }
 
-    fn create_archive_entry(member: ArchiveMember) -> (ar::Header, Vec<u8>) {
+    fn create_archive_entry(member: ArchiveMember) -> (ar::Header, ArchiveMember) {
         let mut header = ar::Header::new(
             member.name.to_string().into_bytes(),
             member.data.len() as u64,
         );
         header.set_mode(0o644);
-        (header, member.data)
+        (header, member)
     }
 
     /// Write out the import library
-    pub fn write_to<W: Write>(&self, writer: &mut W) {
+    pub fn write_to<W: Write + Seek>(&self, writer: &mut W) {
         // FIXME: should use `GnuBuilder`
         let mut members = Vec::new();
         let factory = ObjectFactory::new(&self.def.import_name, self.machine);
@@ -179,9 +181,22 @@ impl ImportLibrary {
             .iter()
             .map(|(header, _)| header.identifier().to_vec())
             .collect();
-        let mut archive = ar::GnuBuilder::new(writer, identifiers);
-        for (header, data) in members {
-            archive.append(&header, &data[..]).unwrap();
+        let symbols: Vec<Vec<u8>> = members
+            .iter()
+            .flat_map(|(_, member)| {
+                member
+                    .symbols
+                    .iter()
+                    .map(|s| s.to_string().into_bytes())
+                    .collect::<Vec<Vec<u8>>>()
+            })
+            .collect();
+        let mut symbol_table = BTreeMap::new();
+        symbol_table.insert(self.def.import_name.to_string().into_bytes(), symbols);
+        let mut archive =
+            ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table).unwrap();
+        for (header, member) in members {
+            archive.append(&header, &member.data[..]).unwrap();
         }
         // FIXME: Need to use ranlib to generate symbol table index to actually be usable
         // See https://github.com/mdsteele/rust-ar/pull/17#issuecomment-1129606307
@@ -192,6 +207,7 @@ impl ImportLibrary {
 struct ArchiveMember<'a> {
     name: &'a str,
     data: Vec<u8>,
+    symbols: Vec<String>,
 }
 
 /// Constructs various small object files necessary to support linking
@@ -471,6 +487,7 @@ impl<'a> ObjectFactory<'a> {
         ArchiveMember {
             name: self.import_name,
             data: buffer,
+            symbols: vec![self.import_descriptor_symbol_name.to_string()],
         }
     }
 
@@ -553,6 +570,7 @@ impl<'a> ObjectFactory<'a> {
         ArchiveMember {
             name: self.import_name,
             data: buffer,
+            symbols: vec![NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME.to_string()],
         }
     }
 
@@ -672,6 +690,7 @@ impl<'a> ObjectFactory<'a> {
         ArchiveMember {
             name: self.import_name,
             data: buffer,
+            symbols: vec![self.null_thunk_symbol_name.to_string()],
         }
     }
 
@@ -705,14 +724,23 @@ impl<'a> ObjectFactory<'a> {
             name_type: U16::new(LE, ((name_type as u16) << 2) | import_type as u16),
         };
         buffer.extend_from_slice(bytes_of(&import_header));
+
+        let symbols = if matches!(import_type, ImportType::Data) {
+            vec![format!("__imp_{}", sym)]
+        } else {
+            vec![format!("__imp_{}", sym), sym.to_string()]
+        };
+
         // Write symbol name and DLL name
         let sym = CString::new(sym).unwrap();
         buffer.extend(sym.into_bytes_with_nul());
         let import_name = CString::new(self.import_name).unwrap();
         buffer.extend(import_name.into_bytes_with_nul());
+
         ArchiveMember {
             name: self.import_name,
             data: buffer,
+            symbols,
         }
     }
 
@@ -820,6 +848,7 @@ impl<'a> ObjectFactory<'a> {
         ArchiveMember {
             name: self.import_name,
             data: buffer,
+            symbols: Vec::new(),
         }
     }
 }
