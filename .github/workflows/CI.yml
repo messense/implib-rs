@@ -35,6 +35,28 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: test
+      - name: Install LLVM
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y llvm
+      - name: Install LLVM
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+      - name: Install LLVM
+        if: matrix.os == 'windows-latest'
+        run: choco install -y llvm
+      - run: llvm-dlltool -m i386:x86-64 -d tests/python39.def -l llvm-python39.lib
+      - name: Compare with llvm-dlltool
+        shell: bash
+        run: |
+          set -e
+          if cmp -s -- python39.lib llvm-python39.lib; then
+            echo "Success!";
+          else
+            echo "Fail!";
+            exit 1;
+          fi
 
   fmt:
     name: Rustfmt
