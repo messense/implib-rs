@@ -198,10 +198,11 @@ impl<W: Write + Seek> GnuBuilder<W> {
             if symbol_table_needs_padding {
                 symbol_table_size += 3; // ` /\n`
             }
+
             write!(
                 writer,
-                "{:<48}{:<10}`\n",
-                GNU_SYMBOL_LOOKUP_TABLE_ID, symbol_table_size
+                "{:<16}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                GNU_SYMBOL_LOOKUP_TABLE_ID, 0, 0, 0, 0, symbol_table_size
             )?;
 
             writer.write_all(&u32::to_be_bytes(u32::try_from(symbol_count).map_err(
