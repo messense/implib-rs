@@ -377,12 +377,12 @@ impl<'a> ObjectFactory<'a> {
         let sym6_offset = (size_of::<u32>()
             + self.import_descriptor_symbol_name.len()
             + 1
-            + self.null_thunk_symbol_name.len()
+            + NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME.len()
             + 1)
         .to_le_bytes();
         let symbol_table = [
             ImageSymbol {
-                name: [0, 0, 0, 0, 4, 0, 0, 0],
+                name: [0, 0, 0, 0, size_of::<u32>() as _, 0, 0, 0],
                 value: U32Bytes::new(LE, 0),
                 section_number: U16Bytes::new(LE, 1),
                 typ: U16Bytes::new(LE, 0),
@@ -540,7 +540,7 @@ impl<'a> ObjectFactory<'a> {
 
         // Symbol Table
         let symbol_table = ImageSymbol {
-            name: [0, 0, 0, 0, 4, 0, 0, 0],
+            name: [0, 0, 0, 0, size_of::<u32>() as _, 0, 0, 0],
             value: U32Bytes::new(LE, 0),
             section_number: U16Bytes::new(LE, 1),
             typ: U16Bytes::new(LE, 0),
@@ -659,7 +659,7 @@ impl<'a> ObjectFactory<'a> {
 
         // Symbol Table
         let symbol_table = ImageSymbol {
-            name: [0, 0, 0, 0, 4, 0, 0, 0],
+            name: [0, 0, 0, 0, size_of::<u32>() as _, 0, 0, 0],
             value: U32Bytes::new(LE, 0),
             section_number: U16Bytes::new(LE, 1),
             typ: U16Bytes::new(LE, 0),
@@ -772,7 +772,7 @@ impl<'a> ObjectFactory<'a> {
                 number_of_aux_symbols: 0,
             },
             ImageSymbol {
-                name: [0, 0, 0, 0, 4, 0, 0, 0],
+                name: [0, 0, 0, 0, size_of::<u32>() as _, 0, 0, 0],
                 value: U32Bytes::new(LE, 0),
                 section_number: U16Bytes::new(LE, 0),
                 typ: U16Bytes::new(LE, 0),
