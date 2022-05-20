@@ -1,4 +1,3 @@
-use std::ffi::CString;
 use std::io::{Seek, Write};
 use std::mem::size_of;
 
@@ -8,11 +7,14 @@ use object::pe::*;
 use object::pod::bytes_of;
 
 pub use self::def::{ModuleDef, ModuleDefError, ShortExport};
+pub use self::error::Error;
 
 /// Unix archiver writer
 mod ar;
 /// Parse .DEF file
 mod def;
+/// Error types
+mod error;
 
 const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &str = "__NULL_IMPORT_DESCRIPTOR";
 
@@ -130,7 +132,7 @@ impl ImportLibrary {
     }
 
     /// Write out the import library
-    pub fn write_to<W: Write + Seek>(&self, writer: &mut W) {
+    pub fn write_to<W: Write + Seek>(&self, writer: &mut W) -> Result<(), Error> {
         // FIXME: should use `GnuBuilder`
         let mut members = Vec::new();
         let factory = ObjectFactory::new(&self.def.import_name, self.machine);
@@ -158,21 +160,21 @@ impl ImportLibrary {
             } else {
                 self.get_name_type(sym, &export.name)
             };
-            let name = if export.ext_name.is_none() {
-                sym
+            let name = if let Some(ext_name) = &export.ext_name {
+                replace(sym, &export.name, ext_name)?
             } else {
-                todo!()
+                sym.to_string()
             };
 
-            if !export.alias_target.is_empty() && name != &export.alias_target {
-                let weak_non_imp = factory.create_weak_external(&export.alias_target, name, false);
+            if !export.alias_target.is_empty() && name != export.alias_target {
+                let weak_non_imp = factory.create_weak_external(&export.alias_target, &name, false);
                 members.push(Self::create_archive_entry(weak_non_imp));
 
-                let weak_imp = factory.create_weak_external(&export.alias_target, name, true);
+                let weak_imp = factory.create_weak_external(&export.alias_target, &name, true);
                 members.push(Self::create_archive_entry(weak_imp));
             }
             let short_import =
-                factory.create_short_import(name, export.ordinal, export.import_type(), name_type);
+                factory.create_short_import(&name, export.ordinal, export.import_type(), name_type);
             members.push(Self::create_archive_entry(short_import));
         }
 
@@ -191,13 +193,37 @@ impl ImportLibrary {
             })
             .collect();
         let mut archive =
-            ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table).unwrap();
+            ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table)?;
         for (header, member) in members {
-            archive.append(&header, &member.data[..]).unwrap();
+            archive.append(&header, &member.data[..])?;
         }
-        // FIXME: Need to use ranlib to generate symbol table index to actually be usable
-        // See https://github.com/mdsteele/rust-ar/pull/17#issuecomment-1129606307
+        Ok(())
     }
+}
+
+fn replace(sym: &str, from: &str, to: &str) -> Result<String, Error> {
+    use std::io::{self, ErrorKind};
+
+    match sym.find(from) {
+        Some(pos) => return Ok(format!("{}{}{}", &sym[..pos], to, &sym[pos + from.len()..])),
+        None => {
+            if from.starts_with('_') && to.starts_with('_') {
+                if let Some(pos) = sym.find(&from[1..]) {
+                    return Ok(format!(
+                        "{}{}{}",
+                        &sym[..pos],
+                        &to[1..],
+                        &sym[pos + from.len() - 1..]
+                    ));
+                }
+            }
+        }
+    }
+    Err(io::Error::new(
+        ErrorKind::Other,
+        format!("{}: replacing '{}' with '{}' failed", sym, from, to),
+    )
+    .into())
 }
 
 #[derive(Debug)]
@@ -243,8 +269,8 @@ impl<'a> ObjectFactory<'a> {
         buffer.extend_from_slice(&[0, 0, 0, 0]);
 
         for s in strings {
-            let c_str = CString::new(*s).unwrap();
-            buffer.extend(c_str.into_bytes_with_nul());
+            buffer.extend(s.as_bytes());
+            buffer.push(b'\0');
         }
 
         // Backfill the length of the table now that it has been computed.
@@ -729,10 +755,10 @@ impl<'a> ObjectFactory<'a> {
         };
 
         // Write symbol name and DLL name
-        let sym = CString::new(sym).unwrap();
-        buffer.extend(sym.into_bytes_with_nul());
-        let import_name = CString::new(self.import_name).unwrap();
-        buffer.extend(import_name.into_bytes_with_nul());
+        buffer.extend(sym.as_bytes());
+        buffer.push(b'\0');
+        buffer.extend(self.import_name.as_bytes());
+        buffer.push(b'\0');
 
         ArchiveMember {
             name: self.import_name,
