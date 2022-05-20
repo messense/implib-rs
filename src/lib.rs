@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::io::{Seek, Write};
 use std::mem::size_of;
@@ -181,9 +180,9 @@ impl ImportLibrary {
             .iter()
             .map(|(header, _)| header.identifier().to_vec())
             .collect();
-        let symbols: Vec<Vec<u8>> = members
+        let symbol_table: Vec<Vec<Vec<u8>>> = members
             .iter()
-            .flat_map(|(_, member)| {
+            .map(|(_, member)| {
                 member
                     .symbols
                     .iter()
@@ -191,8 +190,6 @@ impl ImportLibrary {
                     .collect::<Vec<Vec<u8>>>()
             })
             .collect();
-        let mut symbol_table = BTreeMap::new();
-        symbol_table.insert(self.def.import_name.to_string().into_bytes(), symbols);
         let mut archive =
             ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table).unwrap();
         for (header, member) in members {

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::io::{self, Error, ErrorKind, Read, Result, Seek, Write};
 
@@ -145,7 +145,8 @@ pub struct GnuBuilder<W: Write + Seek> {
     deterministic: bool,
     short_names: HashSet<Vec<u8>>,
     long_names: HashMap<Vec<u8>, usize>,
-    symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>>,
+    symbol_table_relocations: Vec<Vec<u64>>,
+    symbol_index: usize,
 }
 
 impl<W: Write + Seek> GnuBuilder<W> {
@@ -159,7 +160,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
         mut writer: W,
         deterministic: bool,
         identifiers: Vec<Vec<u8>>,
-        symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+        symbol_table: Vec<Vec<Vec<u8>>>,
     ) -> Result<GnuBuilder<W>> {
         let mut short_names = HashSet::<Vec<u8>>::new();
         let mut long_names = HashMap::<Vec<u8>, usize>::new();
@@ -180,17 +181,11 @@ impl<W: Write + Seek> GnuBuilder<W> {
 
         writer.write_all(GLOBAL_HEADER)?;
 
-        let mut symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>> =
-            HashMap::with_capacity(symbol_table.len());
+        let mut symbol_table_relocations: Vec<Vec<u64>> = Vec::with_capacity(symbol_table.len());
         if !symbol_table.is_empty() {
             let wordsize = std::mem::size_of::<u32>();
-            let symbol_count: usize = symbol_table
-                .iter()
-                .map(|(_identifier, symbols)| symbols.len())
-                .sum();
-            let symbols = symbol_table
-                .iter()
-                .flat_map(|(_identifier, symbols)| symbols);
+            let symbol_count: usize = symbol_table.iter().map(|symbols| symbols.len()).sum();
+            let symbols = symbol_table.iter().flatten();
             let mut symbol_table_size: usize = wordsize
                 + wordsize * symbol_count
                 + symbols.map(|symbol| symbol.len() + 1).sum::<usize>();
@@ -209,20 +204,16 @@ impl<W: Write + Seek> GnuBuilder<W> {
                 |_| err!("Too many symbols for 32bit table `{}`", symbol_count),
             )?))?;
 
-            for identifier in symbol_table
-                .iter()
-                .flat_map(|(identifier, symbols)| std::iter::repeat(identifier).take(symbols.len()))
-            {
-                symbol_table_relocations
-                    .entry(identifier.clone())
-                    .or_default()
-                    .push(writer.seek(io::SeekFrom::Current(0))?);
-                writer.write_all(&u32::to_be_bytes(0xcafebabe))?
+            for symbols in &symbol_table {
+                let mut sym_rels = Vec::new();
+                for _symbol in symbols {
+                    sym_rels.push(writer.seek(io::SeekFrom::Current(0))?);
+                    writer.write_all(&u32::to_be_bytes(0xcafebabe))?;
+                }
+                symbol_table_relocations.push(sym_rels);
             }
-            for symbol in symbol_table
-                .iter()
-                .flat_map(|(_identifier, symbols)| symbols)
-            {
+
+            for symbol in symbol_table.iter().flatten() {
                 writer.write_all(symbol)?;
                 writer.write_all(b"\0")?;
             }
@@ -257,6 +248,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
             short_names,
             long_names,
             symbol_table_relocations,
+            symbol_index: 0,
         })
     }
 
@@ -275,7 +267,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
             String::from_utf8_lossy(header.identifier())
         );
 
-        if let Some(relocs) = self.symbol_table_relocations.get(header.identifier()) {
+        if let Some(relocs) = self.symbol_table_relocations.get(self.symbol_index) {
             let entry_offset = self.writer.seek(io::SeekFrom::Current(0))?;
             let entry_offset_bytes = u32::to_be_bytes(
                 u32::try_from(entry_offset).map_err(|_| err!("Archive larger than 4GB"))?,
@@ -285,6 +277,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
                 self.writer.write_all(&entry_offset_bytes)?;
             }
             self.writer.seek(io::SeekFrom::Start(entry_offset))?;
+            self.symbol_index += 1;
         }
 
         header.write_gnu(self.deterministic, &mut self.writer, &self.long_names)?;
