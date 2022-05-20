@@ -1,11 +1,12 @@
 use std::{error, fmt, io};
 
-use crate::def::ModuleDefError;
+use crate::def;
 
+/// Error type for generating import library
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    ModuleDef(ModuleDefError),
+    ModuleDef(def::Error),
 }
 
 impl fmt::Display for Error {
@@ -32,8 +33,8 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<ModuleDefError> for Error {
-    fn from(err: ModuleDefError) -> Error {
+impl From<def::Error> for Error {
+    fn from(err: def::Error) -> Error {
         Error::ModuleDef(err)
     }
 }

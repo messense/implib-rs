@@ -1,4 +1,4 @@
-pub use self::error::ModuleDefError;
+pub use self::error::Error;
 use self::parser::Parser;
 
 mod error;
@@ -21,11 +21,12 @@ pub struct ModuleDef {
 }
 
 impl ModuleDef {
-    pub fn parse(def: &str) -> Result<ModuleDef, ModuleDefError> {
+    pub fn parse(def: &str) -> Result<ModuleDef, Error> {
         Parser::new(def).parse()
     }
 }
 
+/// COFF short export
 #[derive(Debug, Clone, Default)]
 pub struct ShortExport {
     /// The name of the export as specified in the .def file or on the command

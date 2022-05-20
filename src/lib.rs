@@ -6,18 +6,19 @@ use object::endian::{LittleEndian as LE, U16Bytes, U32Bytes, U16, U32};
 use object::pe::*;
 use object::pod::bytes_of;
 
-pub use self::def::{ModuleDef, ModuleDefError, ShortExport};
+use self::def::{ModuleDef, ShortExport};
 pub use self::error::Error;
 
 /// Unix archiver writer
 mod ar;
 /// Parse .DEF file
-mod def;
+pub mod def;
 /// Error types
 mod error;
 
 const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &str = "__NULL_IMPORT_DESCRIPTOR";
 
+/// Machine types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum MachineType {
@@ -94,7 +95,14 @@ pub struct ImportLibrary {
 }
 
 impl ImportLibrary {
-    pub fn new(mut def: ModuleDef, machine: MachineType) -> Self {
+    /// Create new import library generator from module definition text content
+    pub fn new(def: &str, machine: MachineType) -> Result<Self, Error> {
+        let def = ModuleDef::parse(def)?;
+        Ok(Self::from_def(def, machine))
+    }
+
+    /// Create new import library generator from `ModuleDef`
+    pub fn from_def(mut def: ModuleDef, machine: MachineType) -> Self {
         // If ext_name is set (if the "ext_name = name" syntax was used), overwrite
         // name with ext_name and clear ext_name. When only creating an import
         // library and not linking, the internal name is irrelevant.
@@ -106,6 +114,11 @@ impl ImportLibrary {
         // Skipped i386 handling
         // See https://github.com/llvm/llvm-project/blob/09c2b7c35af8c4bad39f03e9f60df8bd07323028/llvm/lib/ToolDrivers/llvm-dlltool/DlltoolDriver.cpp#L197-L212
         ImportLibrary { def, machine }
+    }
+
+    /// Get import library name
+    pub fn import_name(&self) -> &str {
+        &self.def.import_name
     }
 
     fn get_name_type(&self, sym: &str, ext_name: &str) -> ImportNameType {

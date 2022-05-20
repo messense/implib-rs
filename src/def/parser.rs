@@ -1,9 +1,9 @@
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-use super::{ModuleDef, ModuleDefError, ShortExport};
+use super::{Error, ModuleDef, ShortExport};
 
-type Result<T> = std::result::Result<T, ModuleDefError>;
+type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenKind {
@@ -209,11 +209,7 @@ impl<'a> Parser<'a> {
                 self.def.major_image_version = major;
                 self.def.minor_image_version = minor;
             }
-            _ => {
-                return Err(ModuleDefError::UnknownDirective(
-                    token.unwrap_value().to_string(),
-                ))
-            }
+            _ => return Err(Error::UnknownDirective(token.unwrap_value().to_string())),
         }
         Ok(false)
     }
@@ -228,7 +224,7 @@ impl<'a> Parser<'a> {
         if token.kind == TokenKind::Equal {
             let token = self.read();
             if token.kind != TokenKind::Identifier {
-                return Err(ModuleDefError::ExpectedIdentifier);
+                return Err(Error::ExpectedIdentifier);
             }
             export.ext_name = Some(export.name);
             export.name = token.unwrap_value().to_string();
@@ -318,7 +314,7 @@ impl<'a> Parser<'a> {
         return if token.kind == TokenKind::KwBase {
             let token = self.read();
             if token.kind != TokenKind::Equal {
-                return Err(ModuleDefError::ExpectedEqual);
+                return Err(Error::ExpectedEqual);
             }
             let base = self.read_as_int()?;
             Ok((name, base))
@@ -332,23 +328,17 @@ impl<'a> Parser<'a> {
     fn parse_version(&mut self) -> Result<(u32, u32)> {
         let token = self.read();
         if token.kind != TokenKind::Identifier {
-            return Err(ModuleDefError::ExpectedIdentifier);
+            return Err(Error::ExpectedIdentifier);
         }
         let value = token.unwrap_value();
         match value.split_once('.') {
             Some((major, minor)) => {
-                let major = major
-                    .parse::<u32>()
-                    .map_err(|_| ModuleDefError::ExpectedInteger)?;
-                let minor = minor
-                    .parse::<u32>()
-                    .map_err(|_| ModuleDefError::ExpectedInteger)?;
+                let major = major.parse::<u32>().map_err(|_| Error::ExpectedInteger)?;
+                let minor = minor.parse::<u32>().map_err(|_| Error::ExpectedInteger)?;
                 Ok((major, minor))
             }
             None => {
-                let major = value
-                    .parse::<u32>()
-                    .map_err(|_| ModuleDefError::ExpectedInteger)?;
+                let major = value.parse::<u32>().map_err(|_| Error::ExpectedInteger)?;
                 Ok((major, 0))
             }
         }
@@ -365,12 +355,12 @@ impl<'a> Parser<'a> {
     fn read_as_int(&mut self) -> Result<u64> {
         let token = self.read();
         if token.kind != TokenKind::Identifier {
-            return Err(ModuleDefError::ExpectedInteger);
+            return Err(Error::ExpectedInteger);
         }
         token
             .unwrap_value()
             .parse()
-            .map_err(|_| ModuleDefError::ExpectedInteger)
+            .map_err(|_| Error::ExpectedInteger)
     }
 }
 
