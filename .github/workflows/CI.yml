@@ -43,11 +43,10 @@ jobs:
         run: |
           brew install llvm
           echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
-      - name: Install LLVM
-        if: matrix.os == 'windows-latest'
-        run: choco install -y llvm
       - run: llvm-dlltool -m i386:x86-64 -d tests/python39.def -l llvm-python39.lib
+        if: matrix.os != 'windows-latest'
       - name: Compare with llvm-dlltool
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           set -e
