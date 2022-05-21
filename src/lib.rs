@@ -1,4 +1,4 @@
-use std::io::{Seek, Write};
+use std::io::{Error, Seek, Write};
 use std::mem::size_of;
 
 use memoffset::offset_of;
@@ -7,14 +7,11 @@ use object::pe::*;
 use object::pod::bytes_of;
 
 use self::def::{ModuleDef, ShortExport};
-pub use self::error::Error;
 
 /// Unix archiver writer
 mod ar;
 /// Parse .DEF file
 pub mod def;
-/// Error types
-mod error;
 
 const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &str = "__NULL_IMPORT_DESCRIPTOR";
 
@@ -215,7 +212,7 @@ impl ImportLibrary {
 }
 
 fn replace(sym: &str, from: &str, to: &str) -> Result<String, Error> {
-    use std::io::{self, ErrorKind};
+    use std::io::ErrorKind;
 
     match sym.find(from) {
         Some(pos) => return Ok(format!("{}{}{}", &sym[..pos], to, &sym[pos + from.len()..])),
@@ -232,11 +229,10 @@ fn replace(sym: &str, from: &str, to: &str) -> Result<String, Error> {
             }
         }
     }
-    Err(io::Error::new(
+    Err(Error::new(
         ErrorKind::Other,
         format!("{}: replacing '{}' with '{}' failed", sym, from, to),
-    )
-    .into())
+    ))
 }
 
 #[derive(Debug)]

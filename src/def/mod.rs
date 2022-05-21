@@ -1,7 +1,7 @@
-pub use self::error::Error;
+use std::io::Error;
+
 use self::parser::Parser;
 
-mod error;
 mod parser;
 
 /// Simple .DEF file parser

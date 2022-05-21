@@ -1,3 +1,5 @@
+#![allow(clippy::write_with_newline)]
+
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::io::{self, Error, ErrorKind, Read, Result, Seek, Write};
@@ -290,7 +292,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
             );
         }
         if actual_size % 2 != 0 {
-            self.writer.write_all(&['\n' as u8])?;
+            self.writer.write_all(&[b'\n'])?;
         }
 
         Ok(())

@@ -19,7 +19,7 @@ pub use write::GnuBuilder;
 // ========================================================================= //
 
 const GLOBAL_HEADER_LEN: usize = 8;
-const GLOBAL_HEADER: &'static [u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
+const GLOBAL_HEADER: &[u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
 const GNU_NAME_TABLE_ID: &str = "//";
 const GNU_SYMBOL_LOOKUP_TABLE_ID: &str = "/";
