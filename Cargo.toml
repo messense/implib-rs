@@ -1,6 +1,6 @@
 [package]
 name = "implib"
-version = "0.1.0"
+version = "0.2.0"
 description = "Generate Windows import library from module definition file"
 edition = "2018"
 license = "MIT"
