@@ -230,7 +230,7 @@ fn replace(sym: &str, from: &str, to: &str) -> Result<String, Error> {
         }
     }
     Err(Error::new(
-        ErrorKind::Other,
+        ErrorKind::InvalidInput,
         format!("{}: replacing '{}' with '{}' failed", sym, from, to),
     ))
 }

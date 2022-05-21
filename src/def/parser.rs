@@ -212,7 +212,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 return Err(Error::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidInput,
                     format!("unknown directive: {}", token.unwrap_value()),
                 ))
             }
@@ -231,7 +231,7 @@ impl<'a> Parser<'a> {
             let token = self.read();
             if token.kind != TokenKind::Identifier {
                 return Err(Error::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidInput,
                     format!("expected identifier, found: {:?}", token.kind),
                 ));
             }
@@ -324,7 +324,7 @@ impl<'a> Parser<'a> {
             let token = self.read();
             if token.kind != TokenKind::Equal {
                 return Err(Error::new(
-                    ErrorKind::Other,
+                    ErrorKind::InvalidInput,
                     format!("expected equal, found: {:?}", token.kind),
                 ));
             }
@@ -341,7 +341,7 @@ impl<'a> Parser<'a> {
         let token = self.read();
         if token.kind != TokenKind::Identifier {
             return Err(Error::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidInput,
                 format!("expected identifier, found: {:?}", token.kind),
             ));
         }
@@ -350,16 +350,16 @@ impl<'a> Parser<'a> {
             Some((major, minor)) => {
                 let major = major
                     .parse::<u32>()
-                    .map_err(|_| Error::new(ErrorKind::Other, "expected integer"))?;
+                    .map_err(|_| Error::new(ErrorKind::InvalidInput, "expected integer"))?;
                 let minor = minor
                     .parse::<u32>()
-                    .map_err(|_| Error::new(ErrorKind::Other, "expected integer"))?;
+                    .map_err(|_| Error::new(ErrorKind::InvalidInput, "expected integer"))?;
                 Ok((major, minor))
             }
             None => {
                 let major = value
                     .parse::<u32>()
-                    .map_err(|_| Error::new(ErrorKind::Other, "expected integer"))?;
+                    .map_err(|_| Error::new(ErrorKind::InvalidInput, "expected integer"))?;
                 Ok((major, 0))
             }
         }
@@ -377,14 +377,14 @@ impl<'a> Parser<'a> {
         let token = self.read();
         if token.kind != TokenKind::Identifier {
             return Err(Error::new(
-                ErrorKind::Other,
+                ErrorKind::InvalidInput,
                 format!("expected identifier, found: {:?}", token.kind),
             ));
         }
         token
             .unwrap_value()
             .parse()
-            .map_err(|_| Error::new(ErrorKind::Other, "expected integer"))
+            .map_err(|_| Error::new(ErrorKind::InvalidInput, "expected integer"))
     }
 }
 
