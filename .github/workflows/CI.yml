@@ -73,7 +73,7 @@ jobs:
         with:
           crate: cargo-fuzz
       - name: cargo fuzz
-        run: cargo fuzz run fuzz_implib -- -runs=1000000 -max_len=10485760
+        run: cargo fuzz run fuzz_implib -- -runs=1000000 -max_len=10485760 -dict=fuzz/dict.txt
 
   fmt:
     name: Rustfmt
