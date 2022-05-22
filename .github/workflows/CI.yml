@@ -57,6 +57,24 @@ jobs:
             exit 1;
           fi
 
+  fuzz:
+    name: Fuzz Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v1
+      - uses: dtolnay/install@master
+        with:
+          crate: cargo-fuzz
+      - name: cargo fuzz
+        run: cargo fuzz run fuzz_implib -- -runs=1000000 -max_len=10485760
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
