@@ -69,6 +69,19 @@ jobs:
           override: true
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v1
+      - name: Cache fuzz corpus - Step 1
+        uses: actions/cache@v3
+        with:
+          path: fuzz/corpus
+          key: ${{ runner.os }}-fuzz-corpus
+      - name: Cache fuzz corpus - Step 2
+        uses: actions/cache@v3
+        with:
+          path: fuzz/corpus
+          key: ${{ runner.os }}-fuzz-corpus-${{ hashFiles('fuzz/corpus/**/*') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-corpus-${{ hashFiles('fuzz/corpus/**/*') }}
+            ${{ runner.os }}-fuzz-corpus-
       - uses: dtolnay/install@master
         with:
           crate: cargo-fuzz
