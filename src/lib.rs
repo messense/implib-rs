@@ -256,7 +256,11 @@ struct ObjectFactory<'a> {
 
 impl<'a> ObjectFactory<'a> {
     fn new(import_name: &'a str, machine: MachineType) -> Self {
-        let library = &import_name[..import_name.len() - 4];
+        let library = if import_name.ends_with(".dll") || import_name.ends_with(".exe") {
+            &import_name[..import_name.len() - 4]
+        } else {
+            import_name
+        };
         Self {
             machine,
             import_name,
