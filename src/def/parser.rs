@@ -253,7 +253,22 @@ impl<'a> Parser<'a> {
                 if value == "@" {
                     // "foo @ 10"
                     let token = self.read();
-                    export.ordinal = token.unwrap_value().parse().expect("invalid ordinal");
+                    if let Some(value) = token.value {
+                        match value.parse() {
+                            Ok(ordinal) => export.ordinal = ordinal,
+                            Err(_) => {
+                                return Err(Error::new(
+                                    ErrorKind::InvalidInput,
+                                    format!("invalid ordinal: {}", value),
+                                ))
+                            }
+                        }
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!("expected identifier, found: {:?}", token.kind),
+                        ));
+                    }
                 } else if value[1..].parse::<u16>().is_err() {
                     // "foo \n @bar" - Not an ordinal modifier at all, but the next
                     // export (fastcall decorated) - complete the current one.
@@ -283,7 +298,14 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::EqualEqual => {
                     let token = self.read();
-                    export.alias_target = token.unwrap_value().to_string();
+                    if let Some(value) = token.value {
+                        export.alias_target = value.to_string();
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!("expected identifier, found: {:?}", token.kind),
+                        ));
+                    }
                     // Skipped mingw i386 handling
                     // See https://github.com/llvm/llvm-project/blob/09c2b7c35af8c4bad39f03e9f60df8bd07323028/llvm/lib/Object/COFFModuleDefinition.cpp#L282-L283
                 }
@@ -520,5 +542,11 @@ PyBytesIter_Type DATA"#,
         assert!(def.exports[2].data);
         assert_eq!(def.exports[3].name, "PyBytesIter_Type");
         assert!(def.exports[3].data);
+    }
+
+    #[test]
+    fn test_parser_with_bad_input() {
+        Parser::new(" \u{b}EXPORTS D \u{b}===").parse().unwrap_err();
+        Parser::new("EXPORTS 8= @").parse().unwrap_err();
     }
 }
