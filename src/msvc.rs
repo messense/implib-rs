@@ -7,26 +7,20 @@ use object::pe::*;
 use object::pod::bytes_of;
 
 use crate::def::ModuleDef;
-use crate::{ar, ImportNameType, ImportType, MachineType};
+use crate::{ar, ArchiveMember, ImportNameType, ImportType, MachineType};
 
 const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &str = "__NULL_IMPORT_DESCRIPTOR";
 
-/// Windows import library generator
+/// MSVC flavored Windows import library generator
 #[derive(Debug, Clone)]
-pub struct ImportLibrary {
+pub struct MsvcImportLibrary {
     def: ModuleDef,
     machine: MachineType,
 }
 
-impl ImportLibrary {
-    /// Create new import library generator from module definition text content
-    pub fn new(def: &str, machine: MachineType) -> Result<Self, Error> {
-        let def = ModuleDef::parse(def)?;
-        Ok(Self::from_def(def, machine))
-    }
-
+impl MsvcImportLibrary {
     /// Create new import library generator from `ModuleDef`
-    pub fn from_def(mut def: ModuleDef, machine: MachineType) -> Self {
+    pub fn new(mut def: ModuleDef, machine: MachineType) -> Self {
         // If ext_name is set (if the "ext_name = name" syntax was used), overwrite
         // name with ext_name and clear ext_name. When only creating an import
         // library and not linking, the internal name is irrelevant.
@@ -37,12 +31,7 @@ impl ImportLibrary {
         }
         // Skipped i386 handling
         // See https://github.com/llvm/llvm-project/blob/09c2b7c35af8c4bad39f03e9f60df8bd07323028/llvm/lib/ToolDrivers/llvm-dlltool/DlltoolDriver.cpp#L197-L212
-        ImportLibrary { def, machine }
-    }
-
-    /// Get import library name
-    pub fn import_name(&self) -> &str {
-        &self.def.import_name
+        MsvcImportLibrary { def, machine }
     }
 
     fn get_name_type(&self, sym: &str, ext_name: &str) -> ImportNameType {
@@ -59,28 +48,19 @@ impl ImportLibrary {
         }
     }
 
-    fn create_archive_entry(member: ArchiveMember) -> (ar::Header, ArchiveMember) {
-        let mut header = ar::Header::new(
-            member.name.to_string().into_bytes(),
-            member.data.len() as u64,
-        );
-        header.set_mode(0o644);
-        (header, member)
-    }
-
     /// Write out the import library
     pub fn write_to<W: Write + Seek>(&self, writer: &mut W) -> Result<(), Error> {
         let mut members = Vec::new();
         let factory = ObjectFactory::new(&self.def.import_name, self.machine);
 
         let import_descriptor = factory.create_import_descriptor();
-        members.push(Self::create_archive_entry(import_descriptor));
+        members.push(import_descriptor.create_archive_entry());
 
         let null_import_descriptor = factory.create_null_import_descriptor();
-        members.push(Self::create_archive_entry(null_import_descriptor));
+        members.push(null_import_descriptor.create_archive_entry());
 
         let null_thunk = factory.create_null_thunk();
-        members.push(Self::create_archive_entry(null_thunk));
+        members.push(null_thunk.create_archive_entry());
 
         for export in &self.def.exports {
             if export.private {
@@ -104,14 +84,14 @@ impl ImportLibrary {
 
             if !export.alias_target.is_empty() && name != export.alias_target {
                 let weak_non_imp = factory.create_weak_external(&export.alias_target, &name, false);
-                members.push(Self::create_archive_entry(weak_non_imp));
+                members.push(weak_non_imp.create_archive_entry());
 
                 let weak_imp = factory.create_weak_external(&export.alias_target, &name, true);
-                members.push(Self::create_archive_entry(weak_imp));
+                members.push(weak_imp.create_archive_entry());
             }
             let short_import =
                 factory.create_short_import(&name, export.ordinal, export.import_type(), name_type);
-            members.push(Self::create_archive_entry(short_import));
+            members.push(short_import.create_archive_entry());
         }
 
         let identifiers = members
@@ -159,13 +139,6 @@ fn replace(sym: &str, from: &str, to: &str) -> Result<String, Error> {
         ErrorKind::InvalidInput,
         format!("{}: replacing '{}' with '{}' failed", sym, from, to),
     ))
-}
-
-#[derive(Debug)]
-struct ArchiveMember<'a> {
-    name: &'a str,
-    data: Vec<u8>,
-    symbols: Vec<String>,
 }
 
 /// Constructs various small object files necessary to support linking
@@ -221,7 +194,7 @@ impl<'a> ObjectFactory<'a> {
     /// reference to the terminators and contains the library name (entry) for the
     /// import name table.  It will force the linker to construct the necessary
     /// structure to import symbols from the DLL.
-    fn create_import_descriptor(&self) -> ArchiveMember<'a> {
+    fn create_import_descriptor(&self) -> ArchiveMember {
         const NUM_SECTIONS: usize = 2;
         const NUM_SYMBOLS: usize = 7;
         const NUM_RELOCATIONS: usize = 3;
@@ -447,7 +420,7 @@ impl<'a> ObjectFactory<'a> {
             ],
         );
         ArchiveMember {
-            name: self.import_name,
+            name: self.import_name.to_string(),
             data: buffer,
             symbols: vec![self.import_descriptor_symbol_name.to_string()],
         }
@@ -456,7 +429,7 @@ impl<'a> ObjectFactory<'a> {
     /// Creates a NULL import descriptor.  This is a small object file whcih
     /// contains a NULL import descriptor.  It is used to terminate the imports
     /// from a specific DLL.
-    fn create_null_import_descriptor(&self) -> ArchiveMember<'a> {
+    fn create_null_import_descriptor(&self) -> ArchiveMember {
         const NUM_SECTIONS: usize = 1;
         const NUM_SYMBOLS: usize = 1;
 
@@ -530,7 +503,7 @@ impl<'a> ObjectFactory<'a> {
 
         Self::write_string_table(&mut buffer, &[NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME]);
         ArchiveMember {
-            name: self.import_name,
+            name: self.import_name.to_string(),
             data: buffer,
             symbols: vec![NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME.to_string()],
         }
@@ -539,7 +512,7 @@ impl<'a> ObjectFactory<'a> {
     /// Create a NULL Thunk Entry.  This is a small object file which contains a
     /// NULL Import Address Table entry and a NULL Import Lookup Table Entry.  It
     /// is used to terminate the IAT and ILT.
-    fn create_null_thunk(&self) -> ArchiveMember<'a> {
+    fn create_null_thunk(&self) -> ArchiveMember {
         const NUM_SECTIONS: usize = 2;
         const NUM_SYMBOLS: usize = 1;
 
@@ -650,7 +623,7 @@ impl<'a> ObjectFactory<'a> {
 
         Self::write_string_table(&mut buffer, &[&self.null_thunk_symbol_name]);
         ArchiveMember {
-            name: self.import_name,
+            name: self.import_name.to_string(),
             data: buffer,
             symbols: vec![self.null_thunk_symbol_name.to_string()],
         }
@@ -664,7 +637,7 @@ impl<'a> ObjectFactory<'a> {
         ordinal: u16,
         import_type: ImportType,
         name_type: ImportNameType,
-    ) -> ArchiveMember<'a> {
+    ) -> ArchiveMember {
         // +2 for NULs
         let import_name_size = self.import_name.len() + sym.len() + 2;
         let size = size_of::<ImportObjectHeader>() + import_name_size;
@@ -700,14 +673,14 @@ impl<'a> ObjectFactory<'a> {
         buffer.push(b'\0');
 
         ArchiveMember {
-            name: self.import_name,
+            name: self.import_name.to_string(),
             data: buffer,
             symbols,
         }
     }
 
     /// Create a weak external file which is described in PE/COFF Aux Format 3.
-    fn create_weak_external(&self, sym: &str, weak: &str, imp: bool) -> ArchiveMember<'a> {
+    fn create_weak_external(&self, sym: &str, weak: &str, imp: bool) -> ArchiveMember {
         const NUM_SECTIONS: usize = 1;
         const NUM_SYMBOLS: usize = 5;
 
@@ -808,7 +781,7 @@ impl<'a> ObjectFactory<'a> {
             ],
         );
         ArchiveMember {
-            name: self.import_name,
+            name: self.import_name.to_string(),
             data: buffer,
             symbols: Vec::new(),
         }

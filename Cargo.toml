@@ -11,4 +11,4 @@ readme = "README.md"
 
 [dependencies]
 memoffset = "0.6.5"
-object = { version = "0.28.4", default-features = false, features = ["pe"] }
+object = { version = "0.28.4", default-features = false, features = ["pe", "write_std"] }
