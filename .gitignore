@@ -2,3 +2,5 @@
 /Cargo.lock
 *.lib
 *.dll.a
+*.o
+/tmp
