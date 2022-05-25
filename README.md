@@ -12,7 +12,7 @@ Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-implib = "0.2"
+implib = "0.3"
 ```
 
 ## License
