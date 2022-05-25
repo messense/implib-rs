@@ -1,5 +1,6 @@
 use implib::{Flavor, ImportLibrary, MachineType};
 
+#[cfg(feature = "msvc")]
 #[test]
 fn test_import_library_msvc() {
     let import_lib = ImportLibrary::new(
@@ -12,6 +13,7 @@ fn test_import_library_msvc() {
     import_lib.write_to(&mut lib).unwrap();
 }
 
+#[cfg(feature = "gnu")]
 #[test]
 fn test_import_library_gnu() {
     let import_lib = ImportLibrary::new(

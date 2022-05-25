@@ -17,6 +17,18 @@ const JMP_ARM_BYTES: [u8; 12] = [
     0, 0, 0, 0,
 ];
 
+impl MachineType {
+    fn to_arch(self) -> object::Architecture {
+        use object::Architecture::*;
+        match self {
+            Self::AMD64 => X86_64,
+            Self::ARMNT => Arm,
+            Self::ARM64 => Aarch64,
+            Self::I386 => I386,
+        }
+    }
+}
+
 /// GNU flavored Windows import library generator
 #[derive(Debug, Clone)]
 pub struct GnuImportLibrary {

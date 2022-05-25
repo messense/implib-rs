@@ -6,10 +6,57 @@ use object::endian::{LittleEndian as LE, U16Bytes, U32Bytes, U16, U32};
 use object::pe::*;
 use object::pod::bytes_of;
 
-use crate::def::ModuleDef;
-use crate::{ar, ArchiveMember, ImportNameType, ImportType, MachineType};
+use crate::def::{ModuleDef, ShortExport};
+use crate::{ar, ArchiveMember, MachineType};
 
 const NULL_IMPORT_DESCRIPTOR_SYMBOL_NAME: &str = "__NULL_IMPORT_DESCRIPTOR";
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u16)]
+enum ImportType {
+    /// Code, function
+    Code,
+    /// Data
+    Data,
+    /// Constant
+    Const,
+}
+
+impl ShortExport {
+    fn import_type(&self) -> ImportType {
+        if self.data {
+            ImportType::Data
+        } else if self.constant {
+            ImportType::Const
+        } else {
+            ImportType::Code
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u16)]
+enum ImportNameType {
+    /// Import is by ordinal. This indicates that the value in the Ordinal/Hint
+    /// field of the import header is the import's ordinal. If this constant is
+    /// not specified, then the Ordinal/Hint field should always be interpreted
+    /// as the import's hint.
+    Ordinal = IMPORT_OBJECT_ORDINAL,
+    /// The import name is identical to the public symbol name
+    Name = IMPORT_OBJECT_NAME,
+    /// The import name is the public symbol name, but skipping the leading ?,
+    /// @, or optionally _.
+    NameNoPrefix = IMPORT_OBJECT_NAME_NO_PREFIX,
+    /// The import name is the public symbol name, but skipping the leading ?,
+    /// @, or optionally _, and truncating at the first @.
+    NameUndecorate = IMPORT_OBJECT_NAME_UNDECORATE,
+}
+
+impl MachineType {
+    fn is_32bit(&self) -> bool {
+        matches!(self, Self::ARMNT | Self::I386)
+    }
+}
 
 /// MSVC flavored Windows import library generator
 #[derive(Debug, Clone)]

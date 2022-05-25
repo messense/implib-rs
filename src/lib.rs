@@ -1,19 +1,26 @@
+#[cfg(any(not(feature = "msvc"), not(feature = "gnu")))]
+use std::io::ErrorKind;
 use std::io::{Error, Seek, Write};
 
 use object::pe::*;
 
 /// Unix archiver writer
+#[cfg(any(feature = "msvc", feature = "gnu"))]
 mod ar;
 /// Parse .DEF file
 pub mod def;
 /// GNU binutils flavored import library
+#[cfg(feature = "gnu")]
 mod gnu;
 /// MSVC flavored import library
+#[cfg(feature = "msvc")]
 mod msvc;
 
+#[cfg(feature = "gnu")]
 use self::gnu::GnuImportLibrary;
+#[cfg(feature = "msvc")]
 use self::msvc::MsvcImportLibrary;
-use crate::def::{ModuleDef, ShortExport};
+use crate::def::ModuleDef;
 
 /// Machine types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,10 +36,6 @@ pub enum MachineType {
 }
 
 impl MachineType {
-    fn is_32bit(&self) -> bool {
-        matches!(self, Self::ARMNT | Self::I386)
-    }
-
     fn img_rel_relocation(&self) -> u16 {
         match self {
             Self::AMD64 => IMAGE_REL_AMD64_ADDR32NB,
@@ -41,57 +44,6 @@ impl MachineType {
             Self::I386 => IMAGE_REL_I386_DIR32NB,
         }
     }
-
-    fn to_arch(self) -> object::Architecture {
-        use object::Architecture::*;
-        match self {
-            Self::AMD64 => X86_64,
-            Self::ARMNT => Arm,
-            Self::ARM64 => Aarch64,
-            Self::I386 => I386,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(u16)]
-enum ImportType {
-    /// Code, function
-    Code,
-    /// Data
-    Data,
-    /// Constant
-    Const,
-}
-
-impl ShortExport {
-    fn import_type(&self) -> ImportType {
-        if self.data {
-            ImportType::Data
-        } else if self.constant {
-            ImportType::Const
-        } else {
-            ImportType::Code
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(u16)]
-enum ImportNameType {
-    /// Import is by ordinal. This indicates that the value in the Ordinal/Hint
-    /// field of the import header is the import's ordinal. If this constant is
-    /// not specified, then the Ordinal/Hint field should always be interpreted
-    /// as the import's hint.
-    Ordinal = IMPORT_OBJECT_ORDINAL,
-    /// The import name is identical to the public symbol name
-    Name = IMPORT_OBJECT_NAME,
-    /// The import name is the public symbol name, but skipping the leading ?,
-    /// @, or optionally _.
-    NameNoPrefix = IMPORT_OBJECT_NAME_NO_PREFIX,
-    /// The import name is the public symbol name, but skipping the leading ?,
-    /// @, or optionally _, and truncating at the first @.
-    NameUndecorate = IMPORT_OBJECT_NAME_UNDECORATE,
 }
 
 #[derive(Debug)]
@@ -102,6 +54,7 @@ struct ArchiveMember {
 }
 
 impl ArchiveMember {
+    #[cfg(any(feature = "msvc", feature = "gnu"))]
     fn create_archive_entry(self) -> (ar::Header, ArchiveMember) {
         let mut header =
             ar::Header::new(self.name.to_string().into_bytes(), self.data.len() as u64);
@@ -161,8 +114,20 @@ impl ImportLibrary {
     /// Write out the import library
     pub fn write_to<W: Write + Seek>(self, writer: &mut W) -> Result<(), Error> {
         match self.flavor {
+            #[cfg(feature = "msvc")]
             Flavor::Msvc => MsvcImportLibrary::new(self.def, self.machine).write_to(writer),
+            #[cfg(not(feature = "msvc"))]
+            Flavor::Msvc => Err(Error::new(
+                ErrorKind::Unsupported,
+                "MSVC import library unsupported, enable 'msvc' feature to use it",
+            )),
+            #[cfg(feature = "gnu")]
             Flavor::Gnu => GnuImportLibrary::new(self.def, self.machine).write_to(writer),
+            #[cfg(not(feature = "gnu"))]
+            Flavor::Gnu => Err(Error::new(
+                ErrorKind::Unsupported,
+                "GNU import library unsupported, enable 'gnu' feature to use it",
+            )),
         }
     }
 }
