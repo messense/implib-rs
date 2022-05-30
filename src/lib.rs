@@ -83,7 +83,7 @@ pub struct ImportLibrary {
 impl ImportLibrary {
     /// Create new import library generator from module definition text content
     pub fn new(def: &str, machine: MachineType, flavor: Flavor) -> Result<Self, Error> {
-        let def = ModuleDef::parse(def)?;
+        let def = ModuleDef::parse(def, machine)?;
         Ok(Self::from_def(def, machine, flavor))
     }
 

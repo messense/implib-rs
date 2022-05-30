@@ -43,14 +43,24 @@ jobs:
         run: |
           brew install llvm
           echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
-      - run: llvm-dlltool -m i386:x86-64 -d tests/python39.def -l llvm-python39.lib
+      - name: Run llvm-dlltool
+        run: |
+          llvm-dlltool -m i386:x86-64 -d tests/python39.def -l llvm-amd64-python39.lib
+          llvm-dlltool -m i386 -d tests/python39.def -l llvm-i386-python39.lib
         if: matrix.os != 'windows-latest'
       - name: Compare with llvm-dlltool
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           set -e
-          if cmp -s -- python39.lib llvm-python39.lib; then
+          if cmp -s -- amd64-python39.lib llvm-amd64-python39.lib; then
+            echo "Success!";
+          else
+            echo "Fail!";
+            exit 1;
+          fi
+
+          if cmp -s -- i386-python39.lib llvm-i386-python39.lib; then
             echo "Success!";
           else
             echo "Fail!";

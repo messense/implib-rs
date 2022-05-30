@@ -537,7 +537,7 @@ mod test {
     #[test]
     fn test_gnu_with_bad_input() {
         let import_lib = GnuImportLibrary::new(
-            ModuleDef::parse("EXPORTS D\u{c}\0").unwrap(),
+            ModuleDef::parse("EXPORTS D\u{c}\0", MachineType::AMD64).unwrap(),
             MachineType::AMD64,
         );
         import_lib
