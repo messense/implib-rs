@@ -3,6 +3,7 @@ use std::iter::Peekable;
 use std::str::CharIndices;
 
 use super::{ModuleDef, ShortExport};
+use crate::MachineType;
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -157,14 +158,16 @@ pub struct Parser<'a> {
     lexer: Lexer<'a>,
     stack: Vec<Token<'a>>,
     def: ModuleDef,
+    machine: MachineType,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(text: &'a str) -> Self {
+    pub fn new(text: &'a str, machine: MachineType) -> Self {
         Parser {
             lexer: Lexer::new(text),
             stack: Vec::new(),
             def: ModuleDef::default(),
+            machine,
         }
     }
 
@@ -241,8 +244,16 @@ impl<'a> Parser<'a> {
             self.stack.push(token);
         }
 
-        // Skipped mingw i386 exports handling
-        // See https://github.com/llvm/llvm-project/blob/09c2b7c35af8c4bad39f03e9f60df8bd07323028/llvm/lib/Object/COFFModuleDefinition.cpp#L237-L242
+        if self.machine == MachineType::I386 {
+            if !is_decorated(&export.name) {
+                export.name = format!("_{}", export.name);
+            }
+            if let Some(ext_name) = export.ext_name.as_ref() {
+                if !is_decorated(ext_name) {
+                    export.ext_name = Some(format!("_{}", ext_name));
+                }
+            }
+        }
 
         loop {
             let token = self.read();
@@ -410,6 +421,10 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn is_decorated(sym: &str) -> bool {
+    sym.starts_with('@') || sym.starts_with('?') || sym.contains('@')
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -504,15 +519,17 @@ mod test {
 
     #[test]
     fn test_parser() {
-        Parser::new("").parse().unwrap();
+        Parser::new("", MachineType::AMD64).parse().unwrap();
 
-        let def = Parser::new("NAME foo").parse().unwrap();
+        let def = Parser::new("NAME foo", MachineType::AMD64).parse().unwrap();
         assert_eq!(def.import_name, "foo");
 
-        let def = Parser::new("LIBRARY foo.dll").parse().unwrap();
+        let def = Parser::new("LIBRARY foo.dll", MachineType::AMD64)
+            .parse()
+            .unwrap();
         assert_eq!(def.import_name, "foo.dll");
 
-        let def = Parser::new(";\n; comment\nLIBRARY foo.dll")
+        let def = Parser::new(";\n; comment\nLIBRARY foo.dll", MachineType::AMD64)
             .parse()
             .unwrap();
         assert_eq!(def.import_name, "foo.dll");
@@ -529,6 +546,7 @@ PyAIter_Check
 PyArg_Parse
 PyByteArray_Type DATA
 PyBytesIter_Type DATA"#,
+            MachineType::AMD64,
         )
         .parse()
         .unwrap();
@@ -546,7 +564,11 @@ PyBytesIter_Type DATA"#,
 
     #[test]
     fn test_parser_with_bad_input() {
-        Parser::new(" \u{b}EXPORTS D \u{b}===").parse().unwrap_err();
-        Parser::new("EXPORTS 8= @").parse().unwrap_err();
+        Parser::new(" \u{b}EXPORTS D \u{b}===", MachineType::AMD64)
+            .parse()
+            .unwrap_err();
+        Parser::new("EXPORTS 8= @", MachineType::AMD64)
+            .parse()
+            .unwrap_err();
     }
 }

@@ -1,6 +1,7 @@
 use std::io::Error;
 
 use self::parser::Parser;
+use crate::MachineType;
 
 mod parser;
 
@@ -21,8 +22,8 @@ pub struct ModuleDef {
 }
 
 impl ModuleDef {
-    pub fn parse(def: &str) -> Result<ModuleDef, Error> {
-        Parser::new(def).parse()
+    pub fn parse(def: &str, machine: MachineType) -> Result<ModuleDef, Error> {
+        Parser::new(def, machine).parse()
     }
 }
 
