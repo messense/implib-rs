@@ -31,7 +31,7 @@ jobs:
           toolchain: stable
           override: true
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v1
+        uses: Swatinem/rust-cache@v2
       - uses: actions-rs/cargo@v1
         with:
           command: test
@@ -78,7 +78,7 @@ jobs:
           toolchain: nightly
           override: true
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v1
+        uses: Swatinem/rust-cache@v2
       - name: Cache fuzz corpus - Step 1
         uses: actions/cache@v3
         with:
