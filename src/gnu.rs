@@ -1,10 +1,9 @@
 use std::io::{Error, ErrorKind, Seek, Write};
 
 use object::pe::*;
-use object::write::{Object, Relocation, Symbol, SymbolSection};
+use object::write::{Object, Relocation, Symbol, SymbolId, SymbolSection};
 use object::{
-    BinaryFormat, Endianness, RelocationEncoding, RelocationKind, SectionFlags, SectionKind,
-    SymbolFlags, SymbolKind, SymbolScope,
+    BinaryFormat, Endianness, SectionFlags, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
 };
 
 use crate::def::{ModuleDef, ShortExport};
@@ -109,7 +108,20 @@ impl<'a> ObjectFactory<'a> {
             seq: 0,
         })
     }
-
+    fn make_relocation(
+        &self,
+        offset: u64,
+        symbol: SymbolId,
+        addend: i64,
+        rel_kind: u16,
+    ) -> Relocation {
+        Relocation {
+            offset,
+            symbol,
+            addend,
+            flags: object::RelocationFlags::Coff { typ: rel_kind },
+        }
+    }
     fn make_head(&self) -> Result<ArchiveMember, Error> {
         let mut obj = Object::new(
             BinaryFormat::Coff,
@@ -159,30 +171,11 @@ impl<'a> ObjectFactory<'a> {
         obj.add_file_symbol(b"fake".to_vec());
         let id5_sym = obj.section_symbol(id5);
         let id4_sym = obj.section_symbol(id4);
-        obj.add_relocation(
-            id2,
-            Relocation {
-                offset: 0,
-                size: 0,
-                kind: RelocationKind::Coff(self.machine.img_rel_relocation()),
-                encoding: RelocationEncoding::Generic,
-                symbol: id4_sym,
-                addend: 0,
-            },
-        )
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
-        obj.add_relocation(
-            id2,
-            Relocation {
-                offset: 16,
-                size: 0,
-                kind: RelocationKind::Coff(self.machine.img_rel_relocation()),
-                encoding: RelocationEncoding::Generic,
-                symbol: id5_sym,
-                addend: 0,
-            },
-        )
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        let img_rel = self.machine.img_rel_relocation();
+        obj.add_relocation(id2, self.make_relocation(0, id4_sym, 0, img_rel))
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        obj.add_relocation(id2, self.make_relocation(16, id5_sym, 0, img_rel))
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
         let import_name = self.import_name.replace('.', "_");
 
@@ -212,18 +205,8 @@ impl<'a> ObjectFactory<'a> {
         let iname_sym_id = obj.add_symbol(iname_sym);
 
         obj.append_section_data(id2, &[0; 20], 4);
-        obj.add_relocation(
-            id2,
-            Relocation {
-                offset: 12,
-                size: 0,
-                kind: RelocationKind::Coff(self.machine.img_rel_relocation()),
-                encoding: RelocationEncoding::Generic,
-                symbol: iname_sym_id,
-                addend: 0,
-            },
-        )
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        obj.add_relocation(id2, self.make_relocation(12, iname_sym_id, 0, img_rel))
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
         Ok(ArchiveMember {
             name: format!("{}_h.o", self.output_name.replace('.', "_")),
             data: obj
@@ -423,31 +406,16 @@ impl<'a> ObjectFactory<'a> {
             obj.append_section_data(text_sec, jmp_stub, 4);
             obj.add_relocation(
                 text_sec,
-                Relocation {
-                    offset,
-                    size: 0,
-                    kind: RelocationKind::Coff(rel_kind),
-                    encoding: RelocationEncoding::Generic,
-                    symbol: exp_imp_sym,
-                    addend: 0,
-                },
+                self.make_relocation(offset, exp_imp_sym, 0, rel_kind),
             )
             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
         }
 
+        let img_rel = self.machine.img_rel_relocation();
+
         obj.append_section_data(id7, &[0; 4], 4);
-        obj.add_relocation(
-            id7,
-            Relocation {
-                offset: 0,
-                size: 0,
-                kind: RelocationKind::Coff(self.machine.img_rel_relocation()),
-                encoding: RelocationEncoding::Generic,
-                symbol: head_sym,
-                addend: 0,
-            },
-        )
-        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        obj.add_relocation(id7, self.make_relocation(0, head_sym, 0, img_rel))
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
 
         let id6_sym = obj.section_symbol(id6);
         let id5_data = if export.no_name {
@@ -462,18 +430,8 @@ impl<'a> ObjectFactory<'a> {
                 0x80,
             ]
         } else {
-            obj.add_relocation(
-                id5,
-                Relocation {
-                    offset: 0,
-                    size: 0,
-                    kind: RelocationKind::Coff(self.machine.img_rel_relocation()),
-                    encoding: RelocationEncoding::Generic,
-                    symbol: id6_sym,
-                    addend: 0,
-                },
-            )
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            obj.add_relocation(id5, self.make_relocation(0, id6_sym, 0, img_rel))
+                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
             [0; 8]
         };
         obj.append_section_data(id5, &id5_data, 4);
@@ -490,18 +448,8 @@ impl<'a> ObjectFactory<'a> {
                 0x80,
             ]
         } else {
-            obj.add_relocation(
-                id4,
-                Relocation {
-                    offset: 0,
-                    size: 0,
-                    kind: RelocationKind::Coff(self.machine.img_rel_relocation()),
-                    encoding: RelocationEncoding::Generic,
-                    symbol: id6_sym,
-                    addend: 0,
-                },
-            )
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            obj.add_relocation(id4, self.make_relocation(0, id6_sym, 0, img_rel))
+                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
             [0; 8]
         };
         obj.append_section_data(id4, &id4_data, 4);
