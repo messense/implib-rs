@@ -1,8 +1,8 @@
 [package]
 name = "implib"
-version = "0.3.2"
+version = "0.3.3"
 description = "Generate Windows import library from module definition file"
-edition = "2018"
+edition = "2021"
 license = "MIT"
 repository = "https://github.com/messense/implib-rs"
 readme = "README.md"

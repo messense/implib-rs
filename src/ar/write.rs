@@ -209,7 +209,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
             for symbols in &symbol_table {
                 let mut sym_rels = Vec::new();
                 for _symbol in symbols {
-                    sym_rels.push(writer.seek(io::SeekFrom::Current(0))?);
+                    sym_rels.push(writer.stream_position()?);
                     writer.write_all(&u32::to_be_bytes(0xcafebabe))?;
                 }
                 symbol_table_relocations.push(sym_rels);
@@ -270,7 +270,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
         );
 
         if let Some(relocs) = self.symbol_table_relocations.get(self.symbol_index) {
-            let entry_offset = self.writer.seek(io::SeekFrom::Current(0))?;
+            let entry_offset = self.writer.stream_position()?;
             let entry_offset_bytes = u32::to_be_bytes(
                 u32::try_from(entry_offset).map_err(|_| err!("Archive larger than 4GB"))?,
             );
