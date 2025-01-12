@@ -1,7 +1,7 @@
 use std::io::{Error, ErrorKind, Seek, Write};
 
 use object::pe::*;
-use object::write::{Object, Relocation, Symbol, SymbolId, SymbolSection};
+use object::write::{Mangling, Object, Relocation, Symbol, SymbolId, SymbolSection};
 use object::{
     BinaryFormat, Endianness, SectionFlags, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
 };
@@ -179,9 +179,8 @@ impl<'a> ObjectFactory<'a> {
 
         let import_name = self.import_name.replace('.', "_");
 
-        let head_sym_name = format!("_head_{}", import_name);
         let head_sym = Symbol {
-            name: head_sym_name.as_bytes().to_vec(),
+            name: format!("_head_{}", import_name).into_bytes(),
             value: 0,
             size: 0,
             kind: SymbolKind::Data,
@@ -190,7 +189,8 @@ impl<'a> ObjectFactory<'a> {
             section: SymbolSection::Section(id2),
             flags: SymbolFlags::None,
         };
-        obj.add_symbol(head_sym);
+        let head_sym_id = obj.add_symbol(head_sym);
+        let head_sym_name = obj.symbol(head_sym_id).name.clone();
 
         let iname_sym = Symbol {
             name: format!("{}_iname", import_name).into_bytes(),
@@ -212,7 +212,7 @@ impl<'a> ObjectFactory<'a> {
             data: obj
                 .write()
                 .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?,
-            symbols: vec![head_sym_name],
+            symbols: vec![String::from_utf8(head_sym_name).unwrap()],
         })
     }
 
@@ -271,9 +271,8 @@ impl<'a> ObjectFactory<'a> {
         obj.add_file_symbol(b"fake".to_vec());
 
         let import_name = self.import_name.replace('.', "_");
-        let iname_sym_name = format!("{}_iname", import_name);
         let iname_sym = Symbol {
-            name: iname_sym_name.as_bytes().to_vec(),
+            name: format!("{}_iname", import_name).into_bytes(),
             value: 0,
             size: 0,
             kind: SymbolKind::Data,
@@ -282,7 +281,8 @@ impl<'a> ObjectFactory<'a> {
             section: SymbolSection::Section(id7),
             flags: SymbolFlags::None,
         };
-        obj.add_symbol(iname_sym);
+        let iname_sym_id = obj.add_symbol(iname_sym);
+        let iname_sym_name = obj.symbol(iname_sym_id).name.clone();
 
         obj.append_section_data(id4, &[0; 8], 4);
         obj.append_section_data(id5, &[0; 8], 4);
@@ -296,7 +296,7 @@ impl<'a> ObjectFactory<'a> {
             data: obj
                 .write()
                 .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?,
-            symbols: vec![iname_sym_name],
+            symbols: vec![String::from_utf8(iname_sym_name).unwrap()],
         })
     }
 
@@ -367,6 +367,9 @@ impl<'a> ObjectFactory<'a> {
             flags: SymbolFlags::None,
         };
         let head_sym = obj.add_symbol(head_sym);
+
+        // All subsequent symbols should be added unmangled.
+        obj.mangling = Mangling::None;
 
         let mut archive_symbols = Vec::new();
         if !export.data {
@@ -455,12 +458,17 @@ impl<'a> ObjectFactory<'a> {
         obj.append_section_data(id4, &id4_data, 4);
 
         if !export.no_name {
-            let len = 2 + export.name.len() + 1;
+            // Remove i386 mangling added by the def parser.
+            let export_name = match self.machine {
+                MachineType::I386 => export.name.strip_prefix("_").unwrap(),
+                _ => &export.name,
+            };
+            let len = 2 + export_name.len() + 1;
             let mut id6_data = vec![0; len];
             let ord = export.ordinal;
             id6_data[0] = ord as u8;
             id6_data[1] = (ord >> 8) as u8;
-            id6_data[2..len - 1].copy_from_slice(export.name.as_bytes());
+            id6_data[2..len - 1].copy_from_slice(export_name.as_bytes());
             obj.append_section_data(id6, &id6_data, 2);
         }
 
