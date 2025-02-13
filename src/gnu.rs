@@ -409,7 +409,7 @@ impl<'a> ObjectFactory<'a> {
             obj.append_section_data(text_sec, jmp_stub, 4);
             obj.add_relocation(
                 text_sec,
-                self.make_relocation(offset, exp_imp_sym, 0, rel_kind),
+                self.make_relocation(offset, exp_imp_sym, -4, rel_kind),
             )
             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
         }
