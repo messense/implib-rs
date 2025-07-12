@@ -10,10 +10,24 @@ use crate::def::{ModuleDef, ShortExport};
 use crate::{ar, ArchiveMember, MachineType};
 
 const JMP_IX86_BYTES: [u8; 8] = [0xff, 0x25, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90];
+const I386_RELOCATIONS: [(u64, i64, u16); 1] = [(2, -4, IMAGE_REL_I386_REL32)];
+const AMD64_RELOCATIONS: [(u64, i64, u16); 1] = [(2, -4, IMAGE_REL_AMD64_REL32)];
+
 const JMP_ARM_BYTES: [u8; 12] = [
     0x00, 0xc0, 0x9f, 0xe5, /* ldr  ip, [pc] */
     0x00, 0xf0, 0x9c, 0xe5, /* ldr  pc, [ip] */
     0, 0, 0, 0,
+];
+const ARM_RELOCATIONS: [(u64, i64, u16); 1] = [(8, -4, IMAGE_REL_ARM_REL32)];
+
+const JMP_ARM64_BYTES: [u8; 12] = [
+    0x10, 0x00, 0x00, 0x90, /* adrp x16, <(offset >> 12)> */
+    0x10, 0x02, 0x40, 0xF9, /* ldr  x16, [x16, <(offset & 0xFFF)>] */
+    0x00, 0x02, 0x1F, 0xD6, /* br   x16 */
+];
+const ARM64_RELOCATIONS: [(u64, i64, u16); 2] = [
+    (0, 0, IMAGE_REL_ARM64_PAGEBASE_REL21),
+    (4, 0, IMAGE_REL_ARM64_PAGEOFFSET_12L),
 ];
 
 impl MachineType {
@@ -400,18 +414,20 @@ impl<'a> ObjectFactory<'a> {
         archive_symbols.push(format!("__imp_{}", export.name));
 
         if !export.data {
-            let (jmp_stub, offset, rel_kind) = match self.machine {
-                MachineType::I386 => (&JMP_IX86_BYTES[..], 2, IMAGE_REL_I386_REL32),
-                MachineType::ARMNT => (&JMP_ARM_BYTES[..], 8, IMAGE_REL_ARM_REL32),
-                MachineType::AMD64 => (&JMP_IX86_BYTES[..], 2, IMAGE_REL_AMD64_REL32),
-                MachineType::ARM64 => (&JMP_ARM_BYTES[..], 8, IMAGE_REL_ARM64_REL32),
+            let (jmp_stub, relocations) = match self.machine {
+                MachineType::I386 => (&JMP_IX86_BYTES[..], &I386_RELOCATIONS[..]),
+                MachineType::ARMNT => (&JMP_ARM_BYTES[..], &ARM_RELOCATIONS[..]),
+                MachineType::AMD64 => (&JMP_IX86_BYTES[..], &AMD64_RELOCATIONS[..]),
+                MachineType::ARM64 => (&JMP_ARM64_BYTES[..], &ARM64_RELOCATIONS[..]),
             };
             obj.append_section_data(text_sec, jmp_stub, 4);
-            obj.add_relocation(
-                text_sec,
-                self.make_relocation(offset, exp_imp_sym, -4, rel_kind),
-            )
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            for &(offset, addend, kind) in relocations {
+                obj.add_relocation(
+                    text_sec,
+                    self.make_relocation(offset, exp_imp_sym, addend, kind),
+                )
+                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            }
         }
 
         let img_rel = self.machine.img_rel_relocation();
