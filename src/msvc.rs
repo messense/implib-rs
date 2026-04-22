@@ -126,7 +126,7 @@ fn skip_unqualified_name(b: &[u8], pos: usize) -> Option<usize> {
 
 /// Skip a simple name terminated by '@'.
 fn skip_simple_name(b: &[u8], pos: usize) -> Option<usize> {
-    let end = memchr(b'@', &b[pos..])?;
+    let end = memchr::memchr(b'@', &b[pos..])?;
     Some(pos + end + 1)
 }
 
@@ -246,10 +246,6 @@ fn skip_name_scope_piece(b: &[u8], pos: usize) -> Option<usize> {
         }
         _ => skip_simple_name(b, pos),
     }
-}
-
-fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
-    haystack.iter().position(|&b| b == needle)
 }
 
 impl MachineType {
