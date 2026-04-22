@@ -10,7 +10,11 @@ use crate::def::{ModuleDef, ShortExport};
 use crate::{ar, ArchiveMember, MachineType};
 
 const JMP_IX86_BYTES: [u8; 8] = [0xff, 0x25, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90];
-const I386_RELOCATIONS: [(u64, i64, u16); 1] = [(2, -4, IMAGE_REL_I386_REL32)];
+// On i386, `ff 25 disp32` is `jmp dword ptr [disp32]` — an absolute
+// indirect jump (no rip-relative addressing). The disp32 must hold the
+// absolute VA of the IAT entry, so we use IMAGE_REL_I386_DIR32 (matches
+// binutils dlltool's BFD_RELOC_32 for the i386 jtab).
+const I386_RELOCATIONS: [(u64, i64, u16); 1] = [(2, 0, IMAGE_REL_I386_DIR32)];
 const AMD64_RELOCATIONS: [(u64, i64, u16); 1] = [(2, -4, IMAGE_REL_AMD64_REL32)];
 
 const JMP_ARM_BYTES: [u8; 12] = [
@@ -273,7 +277,7 @@ impl<'a> ObjectFactory<'a> {
                 | IMAGE_SCN_MEM_WRITE,
         };
         let id7 = obj.add_section(Vec::new(), b".idata$7".to_vec(), SectionKind::Data);
-        obj.section_mut(id4).flags = SectionFlags::Coff {
+        obj.section_mut(id7).flags = SectionFlags::Coff {
             characteristics: IMAGE_SCN_ALIGN_4BYTES
                 | IMAGE_SCN_CNT_INITIALIZED_DATA
                 | IMAGE_SCN_MEM_READ
@@ -350,19 +354,31 @@ impl<'a> ObjectFactory<'a> {
 
         let id7 = obj.add_section(Vec::new(), b".idata$7".to_vec(), SectionKind::Data);
         obj.section_mut(id7).flags = SectionFlags::Coff {
-            characteristics: IMAGE_SCN_ALIGN_4BYTES | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE,
+            characteristics: IMAGE_SCN_ALIGN_4BYTES
+                | IMAGE_SCN_CNT_INITIALIZED_DATA
+                | IMAGE_SCN_MEM_READ
+                | IMAGE_SCN_MEM_WRITE,
         };
         let id5 = obj.add_section(Vec::new(), b".idata$5".to_vec(), SectionKind::Data);
         obj.section_mut(id5).flags = SectionFlags::Coff {
-            characteristics: IMAGE_SCN_ALIGN_4BYTES | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE,
+            characteristics: IMAGE_SCN_ALIGN_4BYTES
+                | IMAGE_SCN_CNT_INITIALIZED_DATA
+                | IMAGE_SCN_MEM_READ
+                | IMAGE_SCN_MEM_WRITE,
         };
         let id4 = obj.add_section(Vec::new(), b".idata$4".to_vec(), SectionKind::Data);
         obj.section_mut(id4).flags = SectionFlags::Coff {
-            characteristics: IMAGE_SCN_ALIGN_4BYTES | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE,
+            characteristics: IMAGE_SCN_ALIGN_4BYTES
+                | IMAGE_SCN_CNT_INITIALIZED_DATA
+                | IMAGE_SCN_MEM_READ
+                | IMAGE_SCN_MEM_WRITE,
         };
         let id6 = obj.add_section(Vec::new(), b".idata$6".to_vec(), SectionKind::Data);
         obj.section_mut(id6).flags = SectionFlags::Coff {
-            characteristics: IMAGE_SCN_ALIGN_2BYTES | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE,
+            characteristics: IMAGE_SCN_ALIGN_2BYTES
+                | IMAGE_SCN_CNT_INITIALIZED_DATA
+                | IMAGE_SCN_MEM_READ
+                | IMAGE_SCN_MEM_WRITE,
         };
 
         let import_name = self.import_name.replace('.', "_");
