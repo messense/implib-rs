@@ -258,12 +258,15 @@ impl MachineType {
 #[derive(Debug, Clone)]
 pub struct MsvcImportLibrary {
     def: ModuleDef,
+    native_def: Option<ModuleDef>,
     machine: MachineType,
 }
 
 impl MsvcImportLibrary {
-    /// Create new import library generator from `ModuleDef`
-    pub fn new(mut def: ModuleDef, machine: MachineType) -> Self {
+    /// Create new import library generator from `ModuleDef`. For ARM64X,
+    /// `native_def` carries the pure-ARM64 exports; for other machine types
+    /// it should be `None`.
+    pub fn new(mut def: ModuleDef, native_def: Option<ModuleDef>, machine: MachineType) -> Self {
         // If ext_name is set (if the "ext_name = name" syntax was used), overwrite
         // name with ext_name and clear ext_name. When only creating an import
         // library and not linking, the internal name is irrelevant.
@@ -272,9 +275,21 @@ impl MsvcImportLibrary {
                 export.name = ext_name;
             }
         }
+        let native_def = native_def.map(|mut nd| {
+            for export in &mut nd.exports {
+                if let Some(ext_name) = export.ext_name.take() {
+                    export.name = ext_name;
+                }
+            }
+            nd
+        });
         // Skipped i386 handling
         // See https://github.com/llvm/llvm-project/blob/09c2b7c35af8c4bad39f03e9f60df8bd07323028/llvm/lib/ToolDrivers/llvm-dlltool/DlltoolDriver.cpp#L197-L212
-        MsvcImportLibrary { def, machine }
+        MsvcImportLibrary {
+            def,
+            native_def,
+            machine,
+        }
     }
 
     fn get_name_type(&self, sym: &str, ext_name: &str) -> ImportNameType {
@@ -293,19 +308,131 @@ impl MsvcImportLibrary {
 
     /// Write out the import library
     pub fn write_to<W: Write + Seek>(&self, writer: &mut W) -> Result<(), Error> {
-        let mut members = Vec::new();
+        let mut members: Vec<((ar::Header, ArchiveMember), MemberKind)> = Vec::new();
         let factory = ObjectFactory::new(&self.def.import_name, self.machine);
 
         let import_descriptor = factory.create_import_descriptor();
-        members.push(import_descriptor.create_archive_entry());
+        members.push((
+            import_descriptor.create_archive_entry(),
+            MemberKind::Descriptor,
+        ));
 
         let null_import_descriptor = factory.create_null_import_descriptor();
-        members.push(null_import_descriptor.create_archive_entry());
+        members.push((
+            null_import_descriptor.create_archive_entry(),
+            MemberKind::Descriptor,
+        ));
 
         let null_thunk = factory.create_null_thunk();
-        members.push(null_thunk.create_archive_entry());
+        members.push((null_thunk.create_archive_entry(), MemberKind::Descriptor));
 
-        for export in &self.def.exports {
+        // Emit the primary export list. For ARM64EC and ARM64X this uses the
+        // EC machine type and EC name mangling. ARM64X is normalized to
+        // ARM64EC for the short-import header machine field, matching
+        // llvm-lib's behavior.
+        let ec_machine = if self.machine == MachineType::ARM64X {
+            MachineType::ARM64EC
+        } else {
+            self.machine
+        };
+        self.add_exports(
+            &factory,
+            &self.def.exports,
+            ec_machine,
+            MemberKind::Ec,
+            &mut members,
+        )?;
+
+        // ARM64X: also emit the pure-ARM64 native exports.
+        if self.machine == MachineType::ARM64X {
+            if let Some(native_def) = &self.native_def {
+                self.add_exports(
+                    &factory,
+                    &native_def.exports,
+                    MachineType::ARM64,
+                    MemberKind::Native,
+                    &mut members,
+                )?;
+            }
+        }
+
+        let identifiers = members
+            .iter()
+            .map(|((header, _), _)| header.identifier().to_vec())
+            .collect();
+
+        if self.machine.is_ec() {
+            // ARM64EC / ARM64X: split symbols between the regular and EC
+            // symbol tables based on each member's kind.
+            let mut regular_symbol_table: Vec<Vec<Vec<u8>>> = Vec::with_capacity(members.len());
+            let mut ec_symbol_table: Vec<Vec<Vec<u8>>> = Vec::with_capacity(members.len());
+
+            for ((_, member), kind) in &members {
+                let syms: Vec<Vec<u8>> = member
+                    .symbols
+                    .iter()
+                    .map(|s| s.to_string().into_bytes())
+                    .collect();
+
+                match kind {
+                    MemberKind::Descriptor => {
+                        regular_symbol_table.push(syms.clone());
+                        ec_symbol_table.push(syms);
+                    }
+                    MemberKind::Ec => {
+                        regular_symbol_table.push(Vec::new());
+                        ec_symbol_table.push(syms);
+                    }
+                    MemberKind::Native => {
+                        regular_symbol_table.push(syms);
+                        ec_symbol_table.push(Vec::new());
+                    }
+                }
+            }
+
+            let mut archive = ar::GnuBuilder::new_with_symbol_tables(
+                writer,
+                true,
+                identifiers,
+                regular_symbol_table,
+                Some(ec_symbol_table),
+            )?;
+            for ((header, member), _) in members {
+                archive.append(&header, &member.data[..])?;
+            }
+        } else {
+            let symbol_table: Vec<Vec<Vec<u8>>> = members
+                .iter()
+                .map(|((_, member), _)| {
+                    member
+                        .symbols
+                        .iter()
+                        .map(|s| s.to_string().into_bytes())
+                        .collect::<Vec<Vec<u8>>>()
+                })
+                .collect();
+            let mut archive =
+                ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table)?;
+            for ((header, member), _) in members {
+                archive.append(&header, &member.data[..])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Process a list of exports and append the resulting weak-external and
+    /// short-import members into `members`. `machine` is the machine type
+    /// stamped into each emitted COFF/short-import header — for ARM64X this
+    /// is `ARM64EC` for the primary pass and `ARM64` for the native pass.
+    fn add_exports(
+        &self,
+        factory: &ObjectFactory<'_>,
+        exports: &[ShortExport],
+        machine: MachineType,
+        kind: MemberKind,
+        members: &mut Vec<((ar::Header, ArchiveMember), MemberKind)>,
+    ) -> Result<(), Error> {
+        for export in exports {
             if export.private {
                 continue;
             }
@@ -325,8 +452,9 @@ impl MsvcImportLibrary {
                 sym.to_string()
             };
 
-            // ARM64EC: mangle code import names and use EXPORTAS
-            let (name, name_type, export_name) = if self.machine == MachineType::ARM64EC
+            // EC machine: mangle code import names and use EXPORTAS.
+            // The native ARM64 pass for ARM64X never mangles.
+            let (name, name_type, export_name) = if machine.is_ec()
                 && matches!(export.import_type(), ImportType::Code)
                 && !export.no_name
             {
@@ -340,11 +468,13 @@ impl MsvcImportLibrary {
             };
 
             if !export.alias_target.is_empty() && name != export.alias_target {
-                let weak_non_imp = factory.create_weak_external(&export.alias_target, &name, false);
-                members.push(weak_non_imp.create_archive_entry());
+                let weak_non_imp =
+                    factory.create_weak_external(&export.alias_target, &name, false, machine);
+                members.push((weak_non_imp.create_archive_entry(), kind));
 
-                let weak_imp = factory.create_weak_external(&export.alias_target, &name, true);
-                members.push(weak_imp.create_archive_entry());
+                let weak_imp =
+                    factory.create_weak_external(&export.alias_target, &name, true, machine);
+                members.push((weak_imp.create_archive_entry(), kind));
             }
             let short_import = factory.create_short_import(
                 &name,
@@ -352,74 +482,27 @@ impl MsvcImportLibrary {
                 export.import_type(),
                 name_type,
                 export_name.as_deref(),
+                machine,
             );
-            members.push(short_import.create_archive_entry());
-        }
-
-        let identifiers = members
-            .iter()
-            .map(|(header, _)| header.identifier().to_vec())
-            .collect();
-
-        let is_ec = self.machine == MachineType::ARM64EC;
-        let num_descriptor_members = 3; // import_descriptor, null_import_descriptor, null_thunk
-
-        if is_ec {
-            // ARM64EC: split symbols between regular and EC symbol tables.
-            // Regular table: descriptor symbols only (from ARM64 objects).
-            // EC table: descriptor symbols (duplicated) + all export symbols.
-            let mut regular_symbol_table: Vec<Vec<Vec<u8>>> = Vec::with_capacity(members.len());
-            let mut ec_symbol_table: Vec<Vec<Vec<u8>>> = Vec::with_capacity(members.len());
-
-            for (i, (_, member)) in members.iter().enumerate() {
-                let syms: Vec<Vec<u8>> = member
-                    .symbols
-                    .iter()
-                    .map(|s| s.to_string().into_bytes())
-                    .collect();
-
-                if i < num_descriptor_members {
-                    // Descriptor members: symbols go in regular table,
-                    // duplicated into EC table
-                    regular_symbol_table.push(syms.clone());
-                    ec_symbol_table.push(syms);
-                } else {
-                    // Export members: symbols go in EC table only,
-                    // empty entry in regular table to keep indices aligned
-                    regular_symbol_table.push(Vec::new());
-                    ec_symbol_table.push(syms);
-                }
-            }
-
-            let mut archive = ar::GnuBuilder::new_with_symbol_tables(
-                writer,
-                true,
-                identifiers,
-                regular_symbol_table,
-                Some(ec_symbol_table),
-            )?;
-            for (header, member) in members {
-                archive.append(&header, &member.data[..])?;
-            }
-        } else {
-            let symbol_table: Vec<Vec<Vec<u8>>> = members
-                .iter()
-                .map(|(_, member)| {
-                    member
-                        .symbols
-                        .iter()
-                        .map(|s| s.to_string().into_bytes())
-                        .collect::<Vec<Vec<u8>>>()
-                })
-                .collect();
-            let mut archive =
-                ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table)?;
-            for (header, member) in members {
-                archive.append(&header, &member.data[..])?;
-            }
+            members.push((short_import.create_archive_entry(), kind));
         }
         Ok(())
     }
+}
+
+// Categorizes an archive member so its symbols can be routed to the
+// correct symbol table when emitting an ARM64EC / ARM64X archive.
+#[derive(Clone, Copy, PartialEq)]
+enum MemberKind {
+    /// Descriptor object (always native ARM64 for EC); symbols are
+    /// duplicated into both the regular and EC symbol tables.
+    Descriptor,
+    /// EC short-import / weak-external member; symbols go into the
+    /// EC symbol table only.
+    Ec,
+    /// Native ARM64 short-import / weak-external member for ARM64X;
+    /// symbols go into the regular symbol table only.
+    Native,
 }
 
 fn replace(sym: &str, from: &str, to: &str) -> Result<String, Error> {
@@ -452,9 +535,7 @@ fn replace(sym: &str, from: &str, to: &str) -> Result<String, Error> {
 /// WINNT.h and the PE/COFF specification.
 #[derive(Debug)]
 struct ObjectFactory<'a> {
-    /// Machine type for short import objects (ARM64EC for EC targets)
-    machine: MachineType,
-    /// Machine type for descriptor objects (ARM64 for EC targets)
+    /// Machine type for descriptor objects (ARM64 for EC/X targets)
     native_machine: MachineType,
     import_name: &'a str,
     import_descriptor_symbol_name: String,
@@ -469,7 +550,6 @@ impl<'a> ObjectFactory<'a> {
             import_name
         };
         Self {
-            machine,
             native_machine: machine.native_machine(),
             import_name,
             import_descriptor_symbol_name: format!("__IMPORT_DESCRIPTOR_{}", library),
@@ -944,6 +1024,7 @@ impl<'a> ObjectFactory<'a> {
         import_type: ImportType,
         name_type: ImportNameType,
         export_name: Option<&str>,
+        machine: MachineType,
     ) -> ArchiveMember {
         // +2 for NULs of sym and import_name, +1 for optional export_name NUL
         let export_name_size = export_name.map(|n| n.len() + 1).unwrap_or(0);
@@ -956,7 +1037,7 @@ impl<'a> ObjectFactory<'a> {
             sig1: U16::new(LE, 0),
             sig2: U16::new(LE, 0xFFFF),
             version: U16::new(LE, 0),
-            machine: U16::new(LE, self.machine as _),
+            machine: U16::new(LE, machine as _),
             time_date_stamp: U32::new(LE, 0),
             size_of_data: U32::new(LE, import_name_size as _),
             ordinal_or_hint: if ordinal > 0 {
@@ -969,7 +1050,7 @@ impl<'a> ObjectFactory<'a> {
         buffer.extend_from_slice(bytes_of(&import_header));
 
         // Determine archive symbols
-        let is_ec = self.machine == MachineType::ARM64EC;
+        let is_ec = machine.is_ec();
         let symbols = if is_ec && matches!(import_type, ImportType::Code) {
             // ARM64EC code: expose demangled __imp_, demangled thunk,
             // __imp_aux_, and raw EC thunk symbol. The "demangled" name is
@@ -1013,7 +1094,13 @@ impl<'a> ObjectFactory<'a> {
     }
 
     /// Create a weak external file which is described in PE/COFF Aux Format 3.
-    fn create_weak_external(&self, sym: &str, weak: &str, imp: bool) -> ArchiveMember {
+    fn create_weak_external(
+        &self,
+        sym: &str,
+        weak: &str,
+        imp: bool,
+        machine: MachineType,
+    ) -> ArchiveMember {
         const NUM_SECTIONS: usize = 1;
         const NUM_SYMBOLS: usize = 5;
 
@@ -1022,7 +1109,7 @@ impl<'a> ObjectFactory<'a> {
         let pointer_to_symbol_table =
             size_of::<ImageFileHeader>() + NUM_SECTIONS * size_of::<ImageSectionHeader>();
         let header = ImageFileHeader {
-            machine: U16::new(LE, self.machine as u16),
+            machine: U16::new(LE, machine as u16),
             number_of_sections: U16::new(LE, NUM_SECTIONS as u16),
             time_date_stamp: U32::new(LE, 0),
             pointer_to_symbol_table: U32::new(LE, pointer_to_symbol_table as u32),

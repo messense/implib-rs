@@ -36,7 +36,7 @@ impl MachineType {
         match self {
             Self::AMD64 => X86_64,
             Self::ARMNT => Arm,
-            Self::ARM64 | Self::ARM64EC => Aarch64,
+            Self::ARM64 | Self::ARM64EC | Self::ARM64X => Aarch64,
             Self::I386 => I386,
         }
     }
@@ -414,7 +414,7 @@ impl<'a> ObjectFactory<'a> {
                 MachineType::I386 => (&JMP_IX86_BYTES[..], &I386_RELOCATIONS[..]),
                 MachineType::ARMNT => (&JMP_ARM_BYTES[..], &ARM_RELOCATIONS[..]),
                 MachineType::AMD64 => (&JMP_IX86_BYTES[..], &AMD64_RELOCATIONS[..]),
-                MachineType::ARM64 | MachineType::ARM64EC => {
+                MachineType::ARM64 | MachineType::ARM64EC | MachineType::ARM64X => {
                     (&JMP_ARM64_BYTES[..], &ARM64_RELOCATIONS[..])
                 }
             };

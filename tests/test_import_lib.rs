@@ -115,3 +115,50 @@ fn test_import_library_gnu_arm64ec() {
     import_lib.write_to(&mut lib).unwrap();
     assert!(!lib.into_inner().is_empty());
 }
+
+#[cfg(feature = "msvc")]
+#[test]
+fn test_import_library_msvc_arm64x() {
+    // Use the same .def for both EC and native exports — exercises the
+    // dual-emission path and the regular/EC symbol-table split.
+    let import_lib = ImportLibrary::new_arm64x(
+        include_str!("python39.def"),
+        include_str!("python39.def"),
+        Flavor::Msvc,
+    )
+    .unwrap();
+    let mut lib = std::io::Cursor::new(Vec::new());
+    import_lib.write_to(&mut lib).unwrap();
+    let data = lib.into_inner();
+    assert!(!data.is_empty());
+
+    // Archive must contain an /<ECSYMBOLS>/ member (EC half).
+    assert_eq!(&data[..8], b"!<arch>\n");
+    let marker = b"/<ECSYMBOLS>/   ";
+    let ec_pos = data
+        .windows(marker.len())
+        .position(|w| w == marker)
+        .expect("ARM64X import library should contain /<ECSYMBOLS>/ member");
+
+    // Parse the EC member to count its symbols.
+    let size_str = std::str::from_utf8(&data[ec_pos + 48..ec_pos + 58])
+        .unwrap()
+        .trim();
+    let member_size: usize = size_str.parse().unwrap();
+    let body = &data[ec_pos + 60..ec_pos + 60 + member_size];
+    let ec_num_symbols = u32::from_le_bytes(body[0..4].try_into().unwrap()) as usize;
+    assert!(ec_num_symbols > 1000, "expected many EC symbols");
+
+    // The first linker member (regular GNU symbol table at byte 8) must
+    // also contain many symbols — these are the ARM64 native exports.
+    // Header is at offset 8, size at offset 8+48, body starts at offset 8+60.
+    let first_size_str = std::str::from_utf8(&data[8 + 48..8 + 58]).unwrap().trim();
+    let first_size: usize = first_size_str.parse().unwrap();
+    let first_body = &data[8 + 60..8 + 60 + first_size];
+    // First 4 bytes = big-endian symbol count.
+    let regular_num_symbols = u32::from_be_bytes(first_body[0..4].try_into().unwrap()) as usize;
+    assert!(
+        regular_num_symbols > 1000,
+        "expected many native ARM64 symbols in the regular symbol table, got {regular_num_symbols}"
+    );
+}
