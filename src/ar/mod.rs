@@ -23,6 +23,7 @@ const GLOBAL_HEADER: &[u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
 const GNU_NAME_TABLE_ID: &str = "//";
 const GNU_SYMBOL_LOOKUP_TABLE_ID: &str = "/";
+const EC_SYMBOL_TABLE_ID: &str = "/<ECSYMBOLS>/";
 
 // ========================================================================= //
 

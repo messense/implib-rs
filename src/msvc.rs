@@ -2,7 +2,7 @@ use std::io::{Error, Seek, Write};
 use std::mem::size_of;
 
 use memoffset::offset_of;
-use object::endian::{LittleEndian as LE, U16Bytes, U32Bytes, U16, U32};
+use object::endian::{LittleEndian as LE, U16, U32};
 use object::pe::*;
 use object::pod::bytes_of;
 
@@ -50,6 +50,206 @@ enum ImportNameType {
     /// The import name is the public symbol name, but skipping the leading ?,
     /// @, or optionally _, and truncating at the first @.
     NameUndecorate = IMPORT_OBJECT_NAME_UNDECORATE,
+    /// The import name is specified as a separate EXPORTAS string in the
+    /// import object data.
+    ExportAs = IMPORT_OBJECT_NAME_EXPORTAS,
+}
+
+/// Mangle a symbol name for ARM64EC.
+/// For non-C++ names, prefix with '#'. For C++ names with '?', inserts '$$h'
+/// after the qualified name portion. Returns None if the name is already
+/// mangled or cannot be mangled.
+fn arm64ec_mangle_name(name: &str) -> Option<String> {
+    if name.starts_with('#') {
+        return None;
+    }
+    if !name.starts_with('?') {
+        return Some(format!("#{}", name));
+    }
+    if name.contains("$$h") {
+        return None;
+    }
+    // C++ MD5-mangled: ??@hash@ → ??@hash@$$h@
+    if name.starts_with("??@") && name.ends_with('@') {
+        return Some(format!("{}$$h@", name));
+    }
+    // General C++ mangled names: find the insertion point and insert $$h
+    let insert_idx = find_arm64ec_insertion_point(name)?;
+    let mut result = String::with_capacity(name.len() + 3);
+    result.push_str(&name[..insert_idx]);
+    result.push_str("$$h");
+    result.push_str(&name[insert_idx..]);
+    Some(result)
+}
+
+/// Find the byte offset in an MSVC-mangled C++ name where '$$h' should be
+/// inserted. This is right after the fully qualified name (after the '@@'
+/// terminator), before the function encoding (calling convention, return
+/// type, parameters).
+///
+/// This is a lightweight reimplementation of LLVM's
+/// `getArm64ECInsertionPointInMangledName` which uses the MSVC demangler
+/// to parse past the qualified name.
+fn find_arm64ec_insertion_point(name: &str) -> Option<usize> {
+    let b = name.as_bytes();
+    if b.first() != Some(&b'?') {
+        return None;
+    }
+    // Skip the leading '?' — the rest is the unqualified symbol name
+    // followed by the scope chain terminated by '@'.
+    let mut pos = 1;
+
+    // Parse the unqualified symbol name (the leaf identifier)
+    pos = skip_unqualified_name(b, pos)?;
+
+    // Parse the scope chain: each scope component is terminated by '@',
+    // and the entire chain is terminated by an additional '@' (so '@@').
+    pos = skip_name_scope_chain(b, pos)?;
+
+    Some(pos)
+}
+
+/// Skip past an unqualified symbol name starting at `pos`.
+/// Handles: backrefs (digit), template instantiations (?$...),
+/// special function identifiers (?...), and simple names (...@).
+fn skip_unqualified_name(b: &[u8], pos: usize) -> Option<usize> {
+    if pos >= b.len() {
+        return None;
+    }
+    match b[pos] {
+        b'0'..=b'9' => Some(pos + 1), // back-reference
+        b'?' if b.get(pos + 1) == Some(&b'$') => skip_template_instantiation(b, pos),
+        b'?' => skip_special_identifier(b, pos + 1),
+        _ => skip_simple_name(b, pos), // plain name, ends at '@'
+    }
+}
+
+/// Skip a simple name terminated by '@'.
+fn skip_simple_name(b: &[u8], pos: usize) -> Option<usize> {
+    let end = memchr(b'@', &b[pos..])?;
+    Some(pos + end + 1)
+}
+
+/// Skip a template instantiation: ?$Name@TemplateArgs@
+fn skip_template_instantiation(b: &[u8], pos: usize) -> Option<usize> {
+    // Skip '?$'
+    let mut p = pos + 2;
+    // Skip the template name (simple name up to '@')
+    p = skip_simple_name(b, p)?;
+    // Skip template arguments — each argument is a type/value encoding.
+    // Arguments are terminated by a final '@'.
+    p = skip_template_args(b, p)?;
+    Some(p)
+}
+
+/// Skip template arguments until we hit the terminating '@'.
+/// Template args can contain nested names, templates, and types.
+fn skip_template_args(b: &[u8], mut pos: usize) -> Option<usize> {
+    let mut depth = 1u32;
+    while pos < b.len() {
+        match b[pos] {
+            b'@' => {
+                pos += 1;
+                depth -= 1;
+                if depth == 0 {
+                    return Some(pos);
+                }
+            }
+            b'?' if b.get(pos + 1) == Some(&b'$') => {
+                // Nested template — increase depth
+                pos += 2;
+                pos = skip_simple_name(b, pos)?;
+                depth += 1;
+            }
+            _ => {
+                pos += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Skip a special function identifier (operator, ctor, dtor, etc.).
+/// These start after the leading '?' and consist of one or more code chars.
+fn skip_special_identifier(b: &[u8], mut pos: usize) -> Option<usize> {
+    if pos >= b.len() {
+        return None;
+    }
+    match b[pos] {
+        // ??0 = ctor, ??1 = dtor, ??_G = scalar deleting dtor, etc.
+        b'?' => {
+            pos += 1;
+            if pos < b.len() && b[pos] == b'_' {
+                pos += 1; // skip '_'
+            }
+            if pos < b.len() {
+                pos += 1; // skip the code char
+            }
+            Some(pos)
+        }
+        b'0'..=b'9' => Some(pos + 1), // ?0 = ctor, ?1 = dtor
+        b'A'..=b'Z' => Some(pos + 1), // operator codes ?A through ?Z
+        b'_' => {
+            pos += 1;
+            if pos < b.len() {
+                pos += 1; // skip code char after _
+            }
+            Some(pos)
+        }
+        _ => Some(pos),
+    }
+}
+
+/// Skip the name scope chain. Each scope piece is consumed until
+/// we hit a bare '@' which terminates the chain (forming '@@' with
+/// the previous scope terminator or the end of the unqualified name).
+fn skip_name_scope_chain(b: &[u8], mut pos: usize) -> Option<usize> {
+    while pos < b.len() {
+        if b[pos] == b'@' {
+            // This '@' terminates the scope chain
+            return Some(pos + 1);
+        }
+        pos = skip_name_scope_piece(b, pos)?;
+    }
+    None
+}
+
+/// Skip a single scope piece: backref, template, anonymous namespace,
+/// locally-scoped name, or simple name.
+fn skip_name_scope_piece(b: &[u8], pos: usize) -> Option<usize> {
+    if pos >= b.len() {
+        return None;
+    }
+    match b[pos] {
+        b'0'..=b'9' => Some(pos + 1), // back-reference
+        b'?' if b.get(pos + 1) == Some(&b'$') => skip_template_instantiation(b, pos),
+        b'?' if b.get(pos + 1) == Some(&b'A') => {
+            // Anonymous namespace: ?A<hex>@ — skip ?A then find @
+            skip_simple_name(b, pos + 1)
+        }
+        b'?' => {
+            // Locally-scoped name: ?<number>? prefix, then recurse
+            let mut p = pos + 1;
+            // Skip digits
+            while p < b.len() && b[p].is_ascii_digit() {
+                p += 1;
+            }
+            // Skip '?'
+            if p < b.len() && b[p] == b'?' {
+                p += 1;
+            }
+            // The rest is a nested qualified name; skip its unqualified part
+            p = skip_unqualified_name(b, p)?;
+            // Skip its scope chain
+            p = skip_name_scope_chain(b, p)?;
+            Some(p)
+        }
+        _ => skip_simple_name(b, pos),
+    }
+}
+
+fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
+    haystack.iter().position(|&b| b == needle)
 }
 
 impl MachineType {
@@ -129,6 +329,20 @@ impl MsvcImportLibrary {
                 sym.to_string()
             };
 
+            // ARM64EC: mangle code import names and use EXPORTAS
+            let (name, name_type, export_name) = if self.machine == MachineType::ARM64EC
+                && matches!(export.import_type(), ImportType::Code)
+                && !export.no_name
+            {
+                if let Some(mangled) = arm64ec_mangle_name(&name) {
+                    (mangled, ImportNameType::ExportAs, Some(name))
+                } else {
+                    (name, name_type, None)
+                }
+            } else {
+                (name, name_type, None)
+            };
+
             if !export.alias_target.is_empty() && name != export.alias_target {
                 let weak_non_imp = factory.create_weak_external(&export.alias_target, &name, false);
                 members.push(weak_non_imp.create_archive_entry());
@@ -136,8 +350,13 @@ impl MsvcImportLibrary {
                 let weak_imp = factory.create_weak_external(&export.alias_target, &name, true);
                 members.push(weak_imp.create_archive_entry());
             }
-            let short_import =
-                factory.create_short_import(&name, export.ordinal, export.import_type(), name_type);
+            let short_import = factory.create_short_import(
+                &name,
+                export.ordinal,
+                export.import_type(),
+                name_type,
+                export_name.as_deref(),
+            );
             members.push(short_import.create_archive_entry());
         }
 
@@ -145,20 +364,63 @@ impl MsvcImportLibrary {
             .iter()
             .map(|(header, _)| header.identifier().to_vec())
             .collect();
-        let symbol_table: Vec<Vec<Vec<u8>>> = members
-            .iter()
-            .map(|(_, member)| {
-                member
+
+        let is_ec = self.machine == MachineType::ARM64EC;
+        let num_descriptor_members = 3; // import_descriptor, null_import_descriptor, null_thunk
+
+        if is_ec {
+            // ARM64EC: split symbols between regular and EC symbol tables.
+            // Regular table: descriptor symbols only (from ARM64 objects).
+            // EC table: descriptor symbols (duplicated) + all export symbols.
+            let mut regular_symbol_table: Vec<Vec<Vec<u8>>> = Vec::with_capacity(members.len());
+            let mut ec_symbol_table: Vec<Vec<Vec<u8>>> = Vec::with_capacity(members.len());
+
+            for (i, (_, member)) in members.iter().enumerate() {
+                let syms: Vec<Vec<u8>> = member
                     .symbols
                     .iter()
                     .map(|s| s.to_string().into_bytes())
-                    .collect::<Vec<Vec<u8>>>()
-            })
-            .collect();
-        let mut archive =
-            ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table)?;
-        for (header, member) in members {
-            archive.append(&header, &member.data[..])?;
+                    .collect();
+
+                if i < num_descriptor_members {
+                    // Descriptor members: symbols go in regular table,
+                    // duplicated into EC table
+                    regular_symbol_table.push(syms.clone());
+                    ec_symbol_table.push(syms);
+                } else {
+                    // Export members: symbols go in EC table only,
+                    // empty entry in regular table to keep indices aligned
+                    regular_symbol_table.push(Vec::new());
+                    ec_symbol_table.push(syms);
+                }
+            }
+
+            let mut archive = ar::GnuBuilder::new_with_symbol_tables(
+                writer,
+                true,
+                identifiers,
+                regular_symbol_table,
+                Some(ec_symbol_table),
+            )?;
+            for (header, member) in members {
+                archive.append(&header, &member.data[..])?;
+            }
+        } else {
+            let symbol_table: Vec<Vec<Vec<u8>>> = members
+                .iter()
+                .map(|(_, member)| {
+                    member
+                        .symbols
+                        .iter()
+                        .map(|s| s.to_string().into_bytes())
+                        .collect::<Vec<Vec<u8>>>()
+                })
+                .collect();
+            let mut archive =
+                ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table)?;
+            for (header, member) in members {
+                archive.append(&header, &member.data[..])?;
+            }
         }
         Ok(())
     }
@@ -194,7 +456,10 @@ fn replace(sym: &str, from: &str, to: &str) -> Result<String, Error> {
 /// WINNT.h and the PE/COFF specification.
 #[derive(Debug)]
 struct ObjectFactory<'a> {
+    /// Machine type for short import objects (ARM64EC for EC targets)
     machine: MachineType,
+    /// Machine type for descriptor objects (ARM64 for EC targets)
+    native_machine: MachineType,
     import_name: &'a str,
     import_descriptor_symbol_name: String,
     null_thunk_symbol_name: String,
@@ -209,6 +474,7 @@ impl<'a> ObjectFactory<'a> {
         };
         Self {
             machine,
+            native_machine: machine.native_machine(),
             import_name,
             import_descriptor_symbol_name: format!("__IMPORT_DESCRIPTOR_{}", library),
             null_thunk_symbol_name: format!("\x7f{}_NULL_THUNK_DATA", library),
@@ -254,13 +520,13 @@ impl<'a> ObjectFactory<'a> {
             + size_of::<ImageImportDescriptor>() + NUM_RELOCATIONS * size_of::<ImageRelocation>()
             // .idata$4
             + self.import_name.len() + 1;
-        let characteristics = if self.machine.is_32bit() {
+        let characteristics = if self.native_machine.is_32bit() {
             IMAGE_FILE_32BIT_MACHINE
         } else {
             0
         };
         let header = ImageFileHeader {
-            machine: U16::new(LE, self.machine as u16),
+            machine: U16::new(LE, self.native_machine as u16),
             number_of_sections: U16::new(LE, NUM_SECTIONS as u16),
             time_date_stamp: U32::new(LE, 0),
             pointer_to_symbol_table: U32::new(LE, pointer_to_symbol_table as u32),
@@ -330,35 +596,32 @@ impl<'a> ObjectFactory<'a> {
 
         // .idata$2
         let import_descriptor = ImageImportDescriptor {
-            original_first_thunk: U32Bytes::new(LE, 0),
-            time_date_stamp: U32Bytes::new(LE, 0),
-            forwarder_chain: U32Bytes::new(LE, 0),
-            name: U32Bytes::new(LE, 0),
-            first_thunk: U32Bytes::new(LE, 0),
+            original_first_thunk: U32::new(LE, 0),
+            time_date_stamp: U32::new(LE, 0),
+            forwarder_chain: U32::new(LE, 0),
+            name: U32::new(LE, 0),
+            first_thunk: U32::new(LE, 0),
         };
         buffer.extend_from_slice(bytes_of(&import_descriptor));
 
         let relocation_table = [
             ImageRelocation {
-                virtual_address: U32Bytes::new(LE, offset_of!(ImageImportDescriptor, name) as _),
-                symbol_table_index: U32Bytes::new(LE, 2),
-                typ: U16Bytes::new(LE, self.machine.img_rel_relocation()),
+                virtual_address: U32::new(LE, offset_of!(ImageImportDescriptor, name) as _),
+                symbol_table_index: U32::new(LE, 2),
+                typ: U16::new(LE, self.native_machine.img_rel_relocation()),
             },
             ImageRelocation {
-                virtual_address: U32Bytes::new(
+                virtual_address: U32::new(
                     LE,
                     offset_of!(ImageImportDescriptor, original_first_thunk) as _,
                 ),
-                symbol_table_index: U32Bytes::new(LE, 3),
-                typ: U16Bytes::new(LE, self.machine.img_rel_relocation()),
+                symbol_table_index: U32::new(LE, 3),
+                typ: U16::new(LE, self.native_machine.img_rel_relocation()),
             },
             ImageRelocation {
-                virtual_address: U32Bytes::new(
-                    LE,
-                    offset_of!(ImageImportDescriptor, first_thunk) as _,
-                ),
-                symbol_table_index: U32Bytes::new(LE, 4),
-                typ: U16Bytes::new(LE, self.machine.img_rel_relocation()),
+                virtual_address: U32::new(LE, offset_of!(ImageImportDescriptor, first_thunk) as _),
+                symbol_table_index: U32::new(LE, 4),
+                typ: U16::new(LE, self.native_machine.img_rel_relocation()),
             },
         ];
         for relocation in &relocation_table {
@@ -381,41 +644,41 @@ impl<'a> ObjectFactory<'a> {
         let symbol_table = [
             ImageSymbol {
                 name: [0, 0, 0, 0, size_of::<u32>() as _, 0, 0, 0],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 1),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 1),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_EXTERNAL,
                 number_of_aux_symbols: 0,
             },
             ImageSymbol {
                 name: [b'.', b'i', b'd', b'a', b't', b'a', b'$', b'2'],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 1),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 1),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_SECTION,
                 number_of_aux_symbols: 0,
             },
             ImageSymbol {
                 name: [b'.', b'i', b'd', b'a', b't', b'a', b'$', b'6'],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 2),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 2),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_STATIC,
                 number_of_aux_symbols: 0,
             },
             ImageSymbol {
                 name: [b'.', b'i', b'd', b'a', b't', b'a', b'$', b'4'],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_SECTION,
                 number_of_aux_symbols: 0,
             },
             ImageSymbol {
                 name: [b'.', b'i', b'd', b'a', b't', b'a', b'$', b'5'],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_SECTION,
                 number_of_aux_symbols: 0,
             },
@@ -430,9 +693,9 @@ impl<'a> ObjectFactory<'a> {
                     sym5_offset[2],
                     sym5_offset[3],
                 ],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_EXTERNAL,
                 number_of_aux_symbols: 0,
             },
@@ -447,9 +710,9 @@ impl<'a> ObjectFactory<'a> {
                     sym6_offset[2],
                     sym6_offset[3],
                 ],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_EXTERNAL,
                 number_of_aux_symbols: 0,
             },
@@ -486,13 +749,13 @@ impl<'a> ObjectFactory<'a> {
             + NUM_SECTIONS * size_of::<ImageSectionHeader>()
             // .idata$3
             + size_of::<ImageImportDescriptor>();
-        let characteristics = if self.machine.is_32bit() {
+        let characteristics = if self.native_machine.is_32bit() {
             IMAGE_FILE_32BIT_MACHINE
         } else {
             0
         };
         let header = ImageFileHeader {
-            machine: U16::new(LE, self.machine as u16),
+            machine: U16::new(LE, self.native_machine as u16),
             number_of_sections: U16::new(LE, NUM_SECTIONS as u16),
             time_date_stamp: U32::new(LE, 0),
             pointer_to_symbol_table: U32::new(LE, pointer_to_symbol_table as u32),
@@ -529,20 +792,20 @@ impl<'a> ObjectFactory<'a> {
 
         // .idata$3
         let import_descriptor = ImageImportDescriptor {
-            original_first_thunk: U32Bytes::new(LE, 0),
-            time_date_stamp: U32Bytes::new(LE, 0),
-            forwarder_chain: U32Bytes::new(LE, 0),
-            name: U32Bytes::new(LE, 0),
-            first_thunk: U32Bytes::new(LE, 0),
+            original_first_thunk: U32::new(LE, 0),
+            time_date_stamp: U32::new(LE, 0),
+            forwarder_chain: U32::new(LE, 0),
+            name: U32::new(LE, 0),
+            first_thunk: U32::new(LE, 0),
         };
         buffer.extend_from_slice(bytes_of(&import_descriptor));
 
         // Symbol Table
         let symbol_table = ImageSymbol {
             name: [0, 0, 0, 0, size_of::<u32>() as _, 0, 0, 0],
-            value: U32Bytes::new(LE, 0),
-            section_number: U16Bytes::new(LE, 1),
-            typ: U16Bytes::new(LE, 0),
+            value: U32::new(LE, 0),
+            section_number: U16::new(LE, 1),
+            typ: U16::new(LE, 0),
             storage_class: IMAGE_SYM_CLASS_EXTERNAL,
             number_of_aux_symbols: 0,
         };
@@ -565,20 +828,20 @@ impl<'a> ObjectFactory<'a> {
 
         let mut buffer = Vec::new();
 
-        let va_size = if self.machine.is_32bit() { 4 } else { 8 };
+        let va_size = if self.native_machine.is_32bit() { 4 } else { 8 };
         let pointer_to_symbol_table = size_of::<ImageFileHeader>()
             + NUM_SECTIONS * size_of::<ImageSectionHeader>()
             // .idata$5
             + va_size
             // .idata$4
             + va_size;
-        let characteristics = if self.machine.is_32bit() {
+        let characteristics = if self.native_machine.is_32bit() {
             IMAGE_FILE_32BIT_MACHINE
         } else {
             0
         };
         let header = ImageFileHeader {
-            machine: U16::new(LE, self.machine as u16),
+            machine: U16::new(LE, self.native_machine as u16),
             number_of_sections: U16::new(LE, NUM_SECTIONS as u16),
             time_date_stamp: U32::new(LE, 0),
             pointer_to_symbol_table: U32::new(LE, pointer_to_symbol_table as u32),
@@ -589,7 +852,7 @@ impl<'a> ObjectFactory<'a> {
         buffer.extend_from_slice(bytes_of(&header));
 
         // Section Header Table
-        let align = if self.machine.is_32bit() {
+        let align = if self.native_machine.is_32bit() {
             IMAGE_SCN_ALIGN_4BYTES
         } else {
             IMAGE_SCN_ALIGN_8BYTES
@@ -647,22 +910,22 @@ impl<'a> ObjectFactory<'a> {
 
         // .idata$5, ILT
         buffer.extend(0u32.to_le_bytes());
-        if !self.machine.is_32bit() {
+        if !self.native_machine.is_32bit() {
             buffer.extend(0u32.to_le_bytes());
         }
 
         // .idata$4, IAT
         buffer.extend(0u32.to_le_bytes());
-        if !self.machine.is_32bit() {
+        if !self.native_machine.is_32bit() {
             buffer.extend(0u32.to_le_bytes());
         }
 
         // Symbol Table
         let symbol_table = ImageSymbol {
             name: [0, 0, 0, 0, size_of::<u32>() as _, 0, 0, 0],
-            value: U32Bytes::new(LE, 0),
-            section_number: U16Bytes::new(LE, 1),
-            typ: U16Bytes::new(LE, 0),
+            value: U32::new(LE, 0),
+            section_number: U16::new(LE, 1),
+            typ: U16::new(LE, 0),
             storage_class: IMAGE_SYM_CLASS_EXTERNAL,
             number_of_aux_symbols: 0,
         };
@@ -684,9 +947,11 @@ impl<'a> ObjectFactory<'a> {
         ordinal: u16,
         import_type: ImportType,
         name_type: ImportNameType,
+        export_name: Option<&str>,
     ) -> ArchiveMember {
-        // +2 for NULs
-        let import_name_size = self.import_name.len() + sym.len() + 2;
+        // +2 for NULs of sym and import_name, +1 for optional export_name NUL
+        let export_name_size = export_name.map(|n| n.len() + 1).unwrap_or(0);
+        let import_name_size = self.import_name.len() + sym.len() + 2 + export_name_size;
         let size = size_of::<ImportObjectHeader>() + import_name_size;
         let mut buffer = Vec::with_capacity(size);
 
@@ -707,7 +972,26 @@ impl<'a> ObjectFactory<'a> {
         };
         buffer.extend_from_slice(bytes_of(&import_header));
 
-        let symbols = if matches!(import_type, ImportType::Data) {
+        // Determine archive symbols
+        let is_ec = self.machine == MachineType::ARM64EC;
+        let symbols = if is_ec && matches!(import_type, ImportType::Code) {
+            // ARM64EC code: expose demangled __imp_, demangled thunk,
+            // __imp_aux_, and raw EC thunk symbol. The "demangled" name is
+            // the original (pre-mangling) export_name when present (covers
+            // C++ `$$h` insertion which leaves no `#` prefix), otherwise
+            // strip a leading `#` from `sym`.
+            let demangled = export_name.unwrap_or_else(|| sym.strip_prefix('#').unwrap_or(sym));
+            let mut syms = vec![
+                format!("__imp_{}", demangled),
+                demangled.to_string(),
+                format!("__imp_aux_{}", demangled),
+                sym.to_string(),
+            ];
+            // Deduplicate while preserving order (e.g. when sym == demangled).
+            let mut seen = std::collections::HashSet::new();
+            syms.retain(|s| seen.insert(s.clone()));
+            syms
+        } else if matches!(import_type, ImportType::Data) {
             vec![format!("__imp_{}", sym)]
         } else {
             vec![format!("__imp_{}", sym), sym.to_string()]
@@ -718,6 +1002,12 @@ impl<'a> ObjectFactory<'a> {
         buffer.push(b'\0');
         buffer.extend(self.import_name.as_bytes());
         buffer.push(b'\0');
+
+        // Write EXPORTAS name if present
+        if let Some(export_name) = export_name {
+            buffer.extend(export_name.as_bytes());
+            buffer.push(b'\0');
+        }
 
         ArchiveMember {
             name: self.import_name.to_string(),
@@ -767,25 +1057,25 @@ impl<'a> ObjectFactory<'a> {
         let symbol_table = [
             ImageSymbol {
                 name: [b'@', b'c', b'o', b'm', b'p', b'.', b'i', b'd'],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0xFFFF),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0xFFFF),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_STATIC,
                 number_of_aux_symbols: 0,
             },
             ImageSymbol {
                 name: [b'@', b'f', b'e', b'a', b't', b'.', b'0', b'0'],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0xFFFF),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0xFFFF),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_STATIC,
                 number_of_aux_symbols: 0,
             },
             ImageSymbol {
                 name: [0, 0, 0, 0, size_of::<u32>() as _, 0, 0, 0],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_EXTERNAL,
                 number_of_aux_symbols: 0,
             },
@@ -800,17 +1090,17 @@ impl<'a> ObjectFactory<'a> {
                     sym3_offset[2],
                     sym3_offset[3],
                 ],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_WEAK_EXTERNAL,
                 number_of_aux_symbols: 1,
             },
             ImageSymbol {
                 name: [2, 0, 0, 0, IMAGE_WEAK_EXTERN_SEARCH_ALIAS as u8, 0, 0, 0],
-                value: U32Bytes::new(LE, 0),
-                section_number: U16Bytes::new(LE, 0),
-                typ: U16Bytes::new(LE, 0),
+                value: U32::new(LE, 0),
+                section_number: U16::new(LE, 0),
+                typ: U16::new(LE, 0),
                 storage_class: IMAGE_SYM_CLASS_NULL,
                 number_of_aux_symbols: 0,
             },
@@ -831,6 +1121,48 @@ impl<'a> ObjectFactory<'a> {
             name: self.import_name.to_string(),
             data: buffer,
             symbols: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_arm64ec_mangle_name() {
+        // Plain C names get '#' prefix
+        assert_eq!(arm64ec_mangle_name("foo"), Some("#foo".into()));
+        assert_eq!(
+            arm64ec_mangle_name("PyInit_mod"),
+            Some("#PyInit_mod".into())
+        );
+
+        // Already mangled → None
+        assert_eq!(arm64ec_mangle_name("#foo"), None);
+        assert_eq!(arm64ec_mangle_name("?func@@$$hYAHXZ"), None);
+
+        // MD5-hashed C++ names
+        assert_eq!(
+            arm64ec_mangle_name("??@abc123@"),
+            Some("??@abc123@$$h@".into())
+        );
+
+        // C++ mangled names: $$h inserted after qualified name
+        let cases = [
+            ("?func@@YAHXZ", "?func@@$$hYAHXZ"),
+            ("?Method@Class@@QEAAHXZ", "?Method@Class@@$$hQEAAHXZ"),
+            ("?func@NS1@NS2@@YAHXZ", "?func@NS1@NS2@@$$hYAHXZ"),
+            ("??0Class@@QEAA@XZ", "??0Class@@$$hQEAA@XZ"),
+            ("??1Class@@UEAA@XZ", "??1Class@@$$hUEAA@XZ"),
+            ("??HClass@@QEAAHH@Z", "??HClass@@$$hQEAAHH@Z"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                arm64ec_mangle_name(input),
+                Some(expected.into()),
+                "input: {input}"
+            );
         }
     }
 }
