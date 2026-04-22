@@ -35,6 +35,8 @@ pub enum MachineType {
     ARM64 = IMAGE_FILE_MACHINE_ARM64,
     /// ARM64EC (Emulation Compatible)
     ARM64EC = IMAGE_FILE_MACHINE_ARM64EC,
+    /// ARM64X (Mixed ARM64 and ARM64EC)
+    ARM64X = IMAGE_FILE_MACHINE_ARM64X,
 }
 
 impl MachineType {
@@ -42,18 +44,24 @@ impl MachineType {
         match self {
             Self::AMD64 => IMAGE_REL_AMD64_ADDR32NB,
             Self::ARMNT => IMAGE_REL_ARM_ADDR32NB,
-            Self::ARM64 | Self::ARM64EC => IMAGE_REL_ARM64_ADDR32NB,
+            Self::ARM64 | Self::ARM64EC | Self::ARM64X => IMAGE_REL_ARM64_ADDR32NB,
             Self::I386 => IMAGE_REL_I386_DIR32NB,
         }
     }
 
     /// Returns the native machine type.
-    /// For ARM64EC, descriptor objects use native ARM64.
+    /// For ARM64EC and ARM64X, descriptor objects use native ARM64.
     fn native_machine(&self) -> MachineType {
         match self {
-            Self::ARM64EC => Self::ARM64,
+            Self::ARM64EC | Self::ARM64X => Self::ARM64,
             _ => *self,
         }
+    }
+
+    /// Returns true if this machine type uses an EC-style hybrid archive
+    /// layout (ARM64EC or ARM64X).
+    fn is_ec(&self) -> bool {
+        matches!(self, Self::ARM64EC | Self::ARM64X)
     }
 }
 
@@ -87,6 +95,7 @@ pub enum Flavor {
 #[derive(Debug, Clone)]
 pub struct ImportLibrary {
     def: ModuleDef,
+    native_def: Option<ModuleDef>,
     machine: MachineType,
     flavor: Flavor,
 }
@@ -98,8 +107,35 @@ impl ImportLibrary {
         Ok(Self::from_def(def, machine, flavor))
     }
 
+    /// Create new ARM64X import library generator from two module definition
+    /// text contents: `def` describes the ARM64EC/x64-compatible exports and
+    /// `native_def` describes the pure ARM64 exports. The resulting archive
+    /// can be linked from both ARM64 and ARM64EC consumers.
+    pub fn new_arm64x(def: &str, native_def: &str, flavor: Flavor) -> Result<Self, Error> {
+        let def = ModuleDef::parse(def, MachineType::ARM64EC)?;
+        let native_def = ModuleDef::parse(native_def, MachineType::ARM64)?;
+        Ok(Self::from_defs(
+            def,
+            Some(native_def),
+            MachineType::ARM64X,
+            flavor,
+        ))
+    }
+
     /// Create new import library generator from `ModuleDef`
-    pub fn from_def(mut def: ModuleDef, machine: MachineType, flavor: Flavor) -> Self {
+    pub fn from_def(def: ModuleDef, machine: MachineType, flavor: Flavor) -> Self {
+        Self::from_defs(def, None, machine, flavor)
+    }
+
+    /// Create new import library generator from a primary `ModuleDef` and an
+    /// optional native `ModuleDef`. The native def is only meaningful for
+    /// `MachineType::ARM64X`; for other machine types it is ignored.
+    pub fn from_defs(
+        mut def: ModuleDef,
+        native_def: Option<ModuleDef>,
+        machine: MachineType,
+        flavor: Flavor,
+    ) -> Self {
         // If ext_name is set (if the "ext_name = name" syntax was used), overwrite
         // name with ext_name and clear ext_name. When only creating an import
         // library and not linking, the internal name is irrelevant.
@@ -108,10 +144,19 @@ impl ImportLibrary {
                 export.name = ext_name;
             }
         }
+        let native_def = native_def.map(|mut nd| {
+            for export in &mut nd.exports {
+                if let Some(ext_name) = export.ext_name.take() {
+                    export.name = ext_name;
+                }
+            }
+            nd
+        });
         // Skipped i386 handling
         // See https://github.com/llvm/llvm-project/blob/09c2b7c35af8c4bad39f03e9f60df8bd07323028/llvm/lib/ToolDrivers/llvm-dlltool/DlltoolDriver.cpp#L197-L212
         ImportLibrary {
             def,
+            native_def,
             machine,
             flavor,
         }
@@ -126,7 +171,9 @@ impl ImportLibrary {
     pub fn write_to<W: Write + Seek>(self, writer: &mut W) -> Result<(), Error> {
         match self.flavor {
             #[cfg(feature = "msvc")]
-            Flavor::Msvc => MsvcImportLibrary::new(self.def, self.machine).write_to(writer),
+            Flavor::Msvc => {
+                MsvcImportLibrary::new(self.def, self.native_def, self.machine).write_to(writer)
+            }
             #[cfg(not(feature = "msvc"))]
             Flavor::Msvc => Err(Error::new(
                 ErrorKind::Unsupported,
