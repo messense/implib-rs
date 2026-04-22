@@ -529,6 +529,107 @@ mod test {
             .unwrap_err();
     }
 
+    /// Regression test for the i386 jump-stub relocation. The `ff 25 disp32`
+    /// instruction is an absolute indirect jump on i386, so the disp32 must
+    /// be patched with the absolute VA of the IAT entry. This requires
+    /// `IMAGE_REL_I386_DIR32` (not `_REL32`), an addend of 0 (encoded as a
+    /// zero in the section data, since COFF has no explicit addend field),
+    /// and the relocation must point at the `__imp__<name>` symbol.
+    #[test]
+    fn test_i386_jump_stub_relocation() {
+        let mut factory = ObjectFactory::new("foo.dll", MachineType::I386).unwrap();
+        let export = ShortExport {
+            name: "_bar".to_string(), // i386 names are mangled with a leading underscore
+            ext_name: None,
+            symbol_name: String::new(),
+            alias_target: String::new(),
+            ordinal: 0,
+            no_name: false,
+            data: false,
+            private: false,
+            constant: false,
+        };
+        let member = factory.make_one(&export).unwrap();
+        let coff = &member.data[..];
+
+        // --- Parse COFF file header (20 bytes) ---
+        let machine = u16::from_le_bytes(coff[0..2].try_into().unwrap());
+        let nsections = u16::from_le_bytes(coff[2..4].try_into().unwrap()) as usize;
+        let sym_table_ptr = u32::from_le_bytes(coff[8..12].try_into().unwrap()) as usize;
+        let nsymbols = u32::from_le_bytes(coff[12..16].try_into().unwrap()) as usize;
+        assert_eq!(machine, IMAGE_FILE_MACHINE_I386);
+
+        // --- Walk section table to find .text ---
+        let sec_start = 20;
+        let mut text_raw_ptr = 0usize;
+        let mut text_raw_size = 0usize;
+        let mut text_reloc_ptr = 0usize;
+        let mut text_nreloc = 0usize;
+        for i in 0..nsections {
+            let off = sec_start + i * 40;
+            let name = &coff[off..off + 8];
+            let trimmed_end = name.iter().position(|&b| b == 0).unwrap_or(8);
+            if &name[..trimmed_end] == b".text" {
+                text_raw_size =
+                    u32::from_le_bytes(coff[off + 16..off + 20].try_into().unwrap()) as usize;
+                text_raw_ptr =
+                    u32::from_le_bytes(coff[off + 20..off + 24].try_into().unwrap()) as usize;
+                text_reloc_ptr =
+                    u32::from_le_bytes(coff[off + 24..off + 28].try_into().unwrap()) as usize;
+                text_nreloc =
+                    u16::from_le_bytes(coff[off + 32..off + 34].try_into().unwrap()) as usize;
+                break;
+            }
+        }
+        assert_ne!(text_raw_ptr, 0, ".text section not found");
+
+        // --- Verify .text contents are the i386 jump stub ---
+        let text = &coff[text_raw_ptr..text_raw_ptr + text_raw_size];
+        assert_eq!(
+            text,
+            &JMP_IX86_BYTES[..],
+            ".text should contain `ff 25 00 00 00 00 90 90`"
+        );
+        // The disp32 field at offset 2 is the implicit addend; must be 0.
+        let implicit_addend = u32::from_le_bytes(text[2..6].try_into().unwrap());
+        assert_eq!(implicit_addend, 0, "disp32 (implicit addend) must be 0");
+
+        // --- Verify the .text relocation: offset 2, IMAGE_REL_I386_DIR32 ---
+        assert_eq!(text_nreloc, 1, ".text should have exactly one relocation");
+        let rel = &coff[text_reloc_ptr..text_reloc_ptr + 10];
+        let rel_va = u32::from_le_bytes(rel[0..4].try_into().unwrap());
+        let sym_idx = u32::from_le_bytes(rel[4..8].try_into().unwrap()) as usize;
+        let rel_type = u16::from_le_bytes(rel[8..10].try_into().unwrap());
+        assert_eq!(rel_va, 2, "relocation must patch disp32 at offset 2");
+        assert_eq!(
+            rel_type, IMAGE_REL_I386_DIR32,
+            "i386 thunk must use absolute DIR32 (got 0x{:x}); REL32 here would silently \
+             produce thunks that fault on the first call",
+            rel_type
+        );
+
+        // --- Verify the relocation targets `__imp__bar` ---
+        // Each COFF symbol record is 18 bytes. Name: either inline 8 bytes
+        // or {0,0,0,0, offset_into_string_table_u32}.
+        let sym_off = sym_table_ptr + sym_idx * 18;
+        let name_field = &coff[sym_off..sym_off + 8];
+        let target_name: Vec<u8> = if name_field[0..4] == [0, 0, 0, 0] {
+            let str_off = u32::from_le_bytes(name_field[4..8].try_into().unwrap()) as usize;
+            let str_table_off = sym_table_ptr + nsymbols * 18;
+            let s = &coff[str_table_off + str_off..];
+            s[..s.iter().position(|&b| b == 0).unwrap()].to_vec()
+        } else {
+            let end = name_field.iter().position(|&b| b == 0).unwrap_or(8);
+            name_field[..end].to_vec()
+        };
+        assert_eq!(
+            target_name,
+            b"__imp__bar",
+            "i386 thunk reloc target must be `__imp__<mangled-name>`; got {:?}",
+            std::str::from_utf8(&target_name)
+        );
+    }
+
     #[ignore]
     #[test]
     fn debug_head_tail_export() {
