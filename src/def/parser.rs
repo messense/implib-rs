@@ -7,8 +7,9 @@ use crate::MachineType;
 
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum TokenKind {
+    #[default]
     Unknown,
     Eof,
     Identifier,
@@ -26,12 +27,6 @@ enum TokenKind {
     KwPrivate,
     KwStacksize,
     KwVersion,
-}
-
-impl Default for TokenKind {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,7 +348,7 @@ impl<'a> Parser<'a> {
             return Ok((name, 0));
         }
         let token = self.read();
-        return if token.kind == TokenKind::KwBase {
+        if token.kind == TokenKind::KwBase {
             let token = self.read();
             if token.kind != TokenKind::Equal {
                 return Err(Error::new(
@@ -366,7 +361,7 @@ impl<'a> Parser<'a> {
         } else {
             self.stack.push(token);
             Ok((name, 0))
-        };
+        }
     }
 
     // VERSION major[.minor]

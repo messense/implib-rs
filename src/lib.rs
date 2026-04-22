@@ -33,6 +33,8 @@ pub enum MachineType {
     /// AMD64 (K8)
     AMD64 = IMAGE_FILE_MACHINE_AMD64,
     ARM64 = IMAGE_FILE_MACHINE_ARM64,
+    /// ARM64EC (Emulation Compatible)
+    ARM64EC = IMAGE_FILE_MACHINE_ARM64EC,
 }
 
 impl MachineType {
@@ -40,8 +42,17 @@ impl MachineType {
         match self {
             Self::AMD64 => IMAGE_REL_AMD64_ADDR32NB,
             Self::ARMNT => IMAGE_REL_ARM_ADDR32NB,
-            Self::ARM64 => IMAGE_REL_ARM64_ADDR32NB,
+            Self::ARM64 | Self::ARM64EC => IMAGE_REL_ARM64_ADDR32NB,
             Self::I386 => IMAGE_REL_I386_DIR32NB,
+        }
+    }
+
+    /// Returns the native machine type.
+    /// For ARM64EC, descriptor objects use native ARM64.
+    fn native_machine(&self) -> MachineType {
+        match self {
+            Self::ARM64EC => Self::ARM64,
+            _ => *self,
         }
     }
 }

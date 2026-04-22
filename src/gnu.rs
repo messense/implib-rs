@@ -36,7 +36,7 @@ impl MachineType {
         match self {
             Self::AMD64 => X86_64,
             Self::ARMNT => Arm,
-            Self::ARM64 => Aarch64,
+            Self::ARM64 | Self::ARM64EC => Aarch64,
             Self::I386 => I386,
         }
     }
@@ -187,9 +187,9 @@ impl<'a> ObjectFactory<'a> {
         let id4_sym = obj.section_symbol(id4);
         let img_rel = self.machine.img_rel_relocation();
         obj.add_relocation(id2, self.make_relocation(0, id4_sym, 0, img_rel))
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| Error::other(e.to_string()))?;
         obj.add_relocation(id2, self.make_relocation(16, id5_sym, 0, img_rel))
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| Error::other(e.to_string()))?;
 
         let import_name = self.import_name.replace('.', "_");
 
@@ -220,12 +220,10 @@ impl<'a> ObjectFactory<'a> {
 
         obj.append_section_data(id2, &[0; 20], 4);
         obj.add_relocation(id2, self.make_relocation(12, iname_sym_id, 0, img_rel))
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| Error::other(e.to_string()))?;
         Ok(ArchiveMember {
             name: format!("{}_h.o", self.output_name.replace('.', "_")),
-            data: obj
-                .write()
-                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?,
+            data: obj.write().map_err(|e| Error::other(e.to_string()))?,
             symbols: vec![String::from_utf8(head_sym_name).unwrap()],
         })
     }
@@ -307,9 +305,7 @@ impl<'a> ObjectFactory<'a> {
 
         Ok(ArchiveMember {
             name: format!("{}_t.o", self.output_name.replace('.', "_")),
-            data: obj
-                .write()
-                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?,
+            data: obj.write().map_err(|e| Error::other(e.to_string()))?,
             symbols: vec![String::from_utf8(iname_sym_name).unwrap()],
         })
     }
@@ -418,7 +414,9 @@ impl<'a> ObjectFactory<'a> {
                 MachineType::I386 => (&JMP_IX86_BYTES[..], &I386_RELOCATIONS[..]),
                 MachineType::ARMNT => (&JMP_ARM_BYTES[..], &ARM_RELOCATIONS[..]),
                 MachineType::AMD64 => (&JMP_IX86_BYTES[..], &AMD64_RELOCATIONS[..]),
-                MachineType::ARM64 => (&JMP_ARM64_BYTES[..], &ARM64_RELOCATIONS[..]),
+                MachineType::ARM64 | MachineType::ARM64EC => {
+                    (&JMP_ARM64_BYTES[..], &ARM64_RELOCATIONS[..])
+                }
             };
             obj.append_section_data(text_sec, jmp_stub, 4);
             for &(offset, addend, kind) in relocations {
@@ -426,7 +424,7 @@ impl<'a> ObjectFactory<'a> {
                     text_sec,
                     self.make_relocation(offset, exp_imp_sym, addend, kind),
                 )
-                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| Error::other(e.to_string()))?;
             }
         }
 
@@ -434,7 +432,7 @@ impl<'a> ObjectFactory<'a> {
 
         obj.append_section_data(id7, &[0; 4], 4);
         obj.add_relocation(id7, self.make_relocation(0, head_sym, 0, img_rel))
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| Error::other(e.to_string()))?;
 
         let id6_sym = obj.section_symbol(id6);
         let id5_data = if export.no_name {
@@ -450,7 +448,7 @@ impl<'a> ObjectFactory<'a> {
             ]
         } else {
             obj.add_relocation(id5, self.make_relocation(0, id6_sym, 0, img_rel))
-                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| Error::other(e.to_string()))?;
             [0; 8]
         };
         obj.append_section_data(id5, &id5_data, 4);
@@ -468,7 +466,7 @@ impl<'a> ObjectFactory<'a> {
             ]
         } else {
             obj.add_relocation(id4, self.make_relocation(0, id6_sym, 0, img_rel))
-                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| Error::other(e.to_string()))?;
             [0; 8]
         };
         obj.append_section_data(id4, &id4_data, 4);
@@ -493,9 +491,7 @@ impl<'a> ObjectFactory<'a> {
 
         Ok(ArchiveMember {
             name,
-            data: obj
-                .write()
-                .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?,
+            data: obj.write().map_err(|e| Error::other(e.to_string()))?,
             symbols: archive_symbols,
         })
     }
