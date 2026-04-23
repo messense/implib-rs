@@ -6,8 +6,12 @@ use object::{
     BinaryFormat, Endianness, SectionFlags, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
 };
 
+use ar_archive_writer::{
+    write_archive_to_stream, ArchiveKind, NewArchiveMember, DEFAULT_OBJECT_READER,
+};
+
 use crate::def::{ModuleDef, ShortExport};
-use crate::{ar, ArchiveMember, MachineType};
+use crate::{ArchiveMember, MachineType};
 
 const JMP_IX86_BYTES: [u8; 8] = [0xff, 0x25, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90];
 // On i386, `ff 25 disp32` is `jmp dword ptr [disp32]` — an absolute
@@ -74,32 +78,17 @@ impl GnuImportLibrary {
         let mut members = Vec::new();
         let mut factory = ObjectFactory::new(&self.def.import_name, self.machine)?;
         for export in &self.def.exports {
-            members.push(factory.make_one(export)?.create_archive_entry());
+            members.push(factory.make_one(export)?);
         }
-        members.push(factory.make_head()?.create_archive_entry());
-        members.push(factory.make_tail()?.create_archive_entry());
+        members.push(factory.make_head()?);
+        members.push(factory.make_tail()?);
         members.reverse();
 
-        let identifiers = members
-            .iter()
-            .map(|(header, _)| header.identifier().to_vec())
+        let archive_members: Vec<NewArchiveMember> = members
+            .into_iter()
+            .map(|m| NewArchiveMember::new(m.data, &DEFAULT_OBJECT_READER, m.name))
             .collect();
-        let symbol_table: Vec<Vec<Vec<u8>>> = members
-            .iter()
-            .map(|(_, member)| {
-                member
-                    .symbols
-                    .iter()
-                    .map(|s| s.to_string().into_bytes())
-                    .collect::<Vec<Vec<u8>>>()
-            })
-            .collect();
-        let mut archive =
-            ar::GnuBuilder::new_with_symbol_table(writer, true, identifiers, symbol_table)?;
-        for (header, member) in members {
-            archive.append(&header, &member.data[..])?;
-        }
-        Ok(())
+        write_archive_to_stream(writer, &archive_members, ArchiveKind::Gnu, false, None)
     }
 }
 
@@ -207,8 +196,7 @@ impl<'a> ObjectFactory<'a> {
             section: SymbolSection::Section(id2),
             flags: SymbolFlags::None,
         };
-        let head_sym_id = obj.add_symbol(head_sym);
-        let head_sym_name = obj.symbol(head_sym_id).name.clone();
+        obj.add_symbol(head_sym);
 
         let iname_sym = Symbol {
             name: format!("{}_iname", import_name).into_bytes(),
@@ -228,7 +216,6 @@ impl<'a> ObjectFactory<'a> {
         Ok(ArchiveMember {
             name: format!("{}_h.o", self.output_name.replace('.', "_")),
             data: obj.write().map_err(|e| Error::other(e.to_string()))?,
-            symbols: vec![String::from_utf8(head_sym_name).unwrap()],
         })
     }
 
@@ -297,8 +284,7 @@ impl<'a> ObjectFactory<'a> {
             section: SymbolSection::Section(id7),
             flags: SymbolFlags::None,
         };
-        let iname_sym_id = obj.add_symbol(iname_sym);
-        let iname_sym_name = obj.symbol(iname_sym_id).name.clone();
+        obj.add_symbol(iname_sym);
 
         obj.append_section_data(id4, &[0; 8], 4);
         obj.append_section_data(id5, &[0; 8], 4);
@@ -310,7 +296,6 @@ impl<'a> ObjectFactory<'a> {
         Ok(ArchiveMember {
             name: format!("{}_t.o", self.output_name.replace('.', "_")),
             data: obj.write().map_err(|e| Error::other(e.to_string()))?,
-            symbols: vec![String::from_utf8(iname_sym_name).unwrap()],
         })
     }
 
@@ -397,7 +382,6 @@ impl<'a> ObjectFactory<'a> {
         // All subsequent symbols should be added unmangled.
         obj.mangling = Mangling::None;
 
-        let mut archive_symbols = Vec::new();
         if !export.data {
             let exp_sym = Symbol {
                 name: export.name.as_bytes().to_vec(),
@@ -410,7 +394,6 @@ impl<'a> ObjectFactory<'a> {
                 flags: SymbolFlags::None,
             };
             obj.add_symbol(exp_sym);
-            archive_symbols.push(export.name.to_string());
         }
         let exp_imp_sym = Symbol {
             name: format!("__imp_{}", export.name).into_bytes(),
@@ -423,7 +406,6 @@ impl<'a> ObjectFactory<'a> {
             flags: SymbolFlags::None,
         };
         let exp_imp_sym = obj.add_symbol(exp_imp_sym);
-        archive_symbols.push(format!("__imp_{}", export.name));
 
         if !export.data {
             let (jmp_stub, relocations) = match self.machine {
@@ -508,7 +490,6 @@ impl<'a> ObjectFactory<'a> {
         Ok(ArchiveMember {
             name,
             data: obj.write().map_err(|e| Error::other(e.to_string()))?,
-            symbols: archive_symbols,
         })
     }
 }

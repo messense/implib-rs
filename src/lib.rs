@@ -4,9 +4,6 @@ use std::io::{Error, Seek, Write};
 
 use object::pe::*;
 
-/// Unix archiver writer
-#[cfg(any(feature = "msvc", feature = "gnu"))]
-mod ar;
 /// Parse .DEF file
 pub mod def;
 /// GNU binutils flavored import library
@@ -48,38 +45,12 @@ impl MachineType {
             Self::I386 => IMAGE_REL_I386_DIR32NB,
         }
     }
-
-    /// Returns the native machine type.
-    /// For ARM64EC and ARM64X, descriptor objects use native ARM64.
-    fn native_machine(&self) -> MachineType {
-        match self {
-            Self::ARM64EC | Self::ARM64X => Self::ARM64,
-            _ => *self,
-        }
-    }
-
-    /// Returns true if this machine type uses an EC-style hybrid archive
-    /// layout (ARM64EC or ARM64X).
-    fn is_ec(&self) -> bool {
-        matches!(self, Self::ARM64EC | Self::ARM64X)
-    }
 }
 
 #[derive(Debug)]
 struct ArchiveMember {
     name: String,
     data: Vec<u8>,
-    symbols: Vec<String>,
-}
-
-impl ArchiveMember {
-    #[cfg(any(feature = "msvc", feature = "gnu"))]
-    fn create_archive_entry(self) -> (ar::Header, ArchiveMember) {
-        let mut header =
-            ar::Header::new(self.name.to_string().into_bytes(), self.data.len() as u64);
-        header.set_mode(0o644);
-        (header, self)
-    }
 }
 
 /// Import library flavor
