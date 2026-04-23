@@ -29,9 +29,14 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
       - run: cargo test
-      - name: Install LLVM
+      - name: Install LLVM 20
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get install -y llvm
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-20 main" | sudo tee /etc/apt/sources.list.d/llvm-20.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-20
+          echo "/usr/lib/llvm-20/bin" >> $GITHUB_PATH
       - name: Install LLVM
         if: matrix.os == 'macos-latest'
         run: |
@@ -43,7 +48,6 @@ jobs:
           llvm-dlltool -m i386 -d tests/python39.def -l llvm-i386-python39.lib
         if: matrix.os != 'windows-latest'
       - name: Compare with llvm-dlltool
-        # TOFIX: fix this on macOS
         if: matrix.os == 'ubuntu-latest'
         run: |
           set -e
