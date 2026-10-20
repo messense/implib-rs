@@ -24,20 +24,20 @@ use crate::def::ModuleDef;
 #[repr(u16)]
 pub enum MachineType {
     /// Intel 386
-    I386 = IMAGE_FILE_MACHINE_I386,
+    I386 = IMAGE_FILE_MACHINE_I386.0,
     /// ARM Thumb-2 Little-Endian
-    ARMNT = IMAGE_FILE_MACHINE_ARMNT,
+    ARMNT = IMAGE_FILE_MACHINE_ARMNT.0,
     /// AMD64 (K8)
-    AMD64 = IMAGE_FILE_MACHINE_AMD64,
-    ARM64 = IMAGE_FILE_MACHINE_ARM64,
+    AMD64 = IMAGE_FILE_MACHINE_AMD64.0,
+    ARM64 = IMAGE_FILE_MACHINE_ARM64.0,
     /// ARM64EC (Emulation Compatible)
-    ARM64EC = IMAGE_FILE_MACHINE_ARM64EC,
+    ARM64EC = IMAGE_FILE_MACHINE_ARM64EC.0,
     /// ARM64X (Mixed ARM64 and ARM64EC)
-    ARM64X = IMAGE_FILE_MACHINE_ARM64X,
+    ARM64X = IMAGE_FILE_MACHINE_ARM64X.0,
 }
 
 impl MachineType {
-    fn img_rel_relocation(&self) -> u16 {
+    fn img_rel_relocation(&self) -> RelocationType {
         match self {
             Self::AMD64 => IMAGE_REL_AMD64_ADDR32NB,
             Self::ARMNT => IMAGE_REL_ARM_ADDR32NB,

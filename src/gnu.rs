@@ -18,22 +18,22 @@ const JMP_IX86_BYTES: [u8; 8] = [0xff, 0x25, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90]
 // indirect jump (no rip-relative addressing). The disp32 must hold the
 // absolute VA of the IAT entry, so we use IMAGE_REL_I386_DIR32 (matches
 // binutils dlltool's BFD_RELOC_32 for the i386 jtab).
-const I386_RELOCATIONS: [(u64, i64, u16); 1] = [(2, 0, IMAGE_REL_I386_DIR32)];
-const AMD64_RELOCATIONS: [(u64, i64, u16); 1] = [(2, -4, IMAGE_REL_AMD64_REL32)];
+const I386_RELOCATIONS: [(u64, i64, RelocationType); 1] = [(2, 0, IMAGE_REL_I386_DIR32)];
+const AMD64_RELOCATIONS: [(u64, i64, RelocationType); 1] = [(2, -4, IMAGE_REL_AMD64_REL32)];
 
 const JMP_ARM_BYTES: [u8; 12] = [
     0x00, 0xc0, 0x9f, 0xe5, /* ldr  ip, [pc] */
     0x00, 0xf0, 0x9c, 0xe5, /* ldr  pc, [ip] */
     0, 0, 0, 0,
 ];
-const ARM_RELOCATIONS: [(u64, i64, u16); 1] = [(8, -4, IMAGE_REL_ARM_REL32)];
+const ARM_RELOCATIONS: [(u64, i64, RelocationType); 1] = [(8, -4, IMAGE_REL_ARM_REL32)];
 
 const JMP_ARM64_BYTES: [u8; 12] = [
     0x10, 0x00, 0x00, 0x90, /* adrp x16, <(offset >> 12)> */
     0x10, 0x02, 0x40, 0xF9, /* ldr  x16, [x16, <(offset & 0xFFF)>] */
     0x00, 0x02, 0x1F, 0xD6, /* br   x16 */
 ];
-const ARM64_RELOCATIONS: [(u64, i64, u16); 2] = [
+const ARM64_RELOCATIONS: [(u64, i64, RelocationType); 2] = [
     (0, 0, IMAGE_REL_ARM64_PAGEBASE_REL21),
     (4, 0, IMAGE_REL_ARM64_PAGEOFFSET_12L),
 ];
@@ -120,7 +120,7 @@ impl<'a> ObjectFactory<'a> {
         offset: u64,
         symbol: SymbolId,
         addend: i64,
-        rel_kind: u16,
+        rel_kind: RelocationType,
     ) -> Relocation {
         Relocation {
             offset,
@@ -538,7 +538,7 @@ mod test {
         let nsections = u16::from_le_bytes(coff[2..4].try_into().unwrap()) as usize;
         let sym_table_ptr = u32::from_le_bytes(coff[8..12].try_into().unwrap()) as usize;
         let nsymbols = u32::from_le_bytes(coff[12..16].try_into().unwrap()) as usize;
-        assert_eq!(machine, IMAGE_FILE_MACHINE_I386);
+        assert_eq!(machine, IMAGE_FILE_MACHINE_I386.0);
 
         // --- Walk section table to find .text ---
         let sec_start = 20;
@@ -583,7 +583,7 @@ mod test {
         let rel_type = u16::from_le_bytes(rel[8..10].try_into().unwrap());
         assert_eq!(rel_va, 2, "relocation must patch disp32 at offset 2");
         assert_eq!(
-            rel_type, IMAGE_REL_I386_DIR32,
+            rel_type, IMAGE_REL_I386_DIR32.0,
             "i386 thunk must use absolute DIR32 (got 0x{:x}); REL32 here would silently \
              produce thunks that fault on the first call",
             rel_type
